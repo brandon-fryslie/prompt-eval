@@ -19,6 +19,7 @@ import {
   IconMessageCircle,
   IconCode,
   IconX,
+  IconAlertTriangle,
 } from '@tabler/icons-react';
 import { useState, useEffect } from 'react';
 import { MarkdownOutput } from './MarkdownOutput';
@@ -32,6 +33,8 @@ interface Props {
   onModelChange: (model: string) => void;
   models: ModelGroup[];
   modelsLoading: boolean;
+  hideModelSelector?: boolean;
+  isDuplicateModel?: boolean;
   // Preprocessing
   preprocessEnabled: boolean;
   onPreprocessEnabledChange: (v: boolean) => void;
@@ -42,12 +45,14 @@ interface Props {
   // Main prompt
   prompt: string;
   onPromptChange: (v: string) => void;
+  hidePromptSection?: boolean;
   // Output
   response: string;
   isStreaming: boolean;
   inputTokens: number;
   outputTokens: number;
   cost: number | null;
+  estimatedInputCost: number | null;
   disabled: boolean;
   autoCollapse: boolean;
   // Optional remove
@@ -58,13 +63,15 @@ function tok(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
-function formatCost(cost: number): string {
-  if (cost === 0) return '$0.00';
-  if (cost < 0.0001) return `$${cost.toFixed(6)}`;
-  if (cost < 0.001)  return `$${cost.toFixed(5)}`;
-  if (cost < 0.01)   return `$${cost.toFixed(4)}`;
-  if (cost < 1)      return `$${cost.toFixed(3)}`;
-  return `$${cost.toFixed(2)}`;
+function formatCost(cost: number, prefix = ''): string {
+  const s =
+    cost === 0      ? '$0.00' :
+    cost < 0.0001   ? `$${cost.toFixed(6)}` :
+    cost < 0.001    ? `$${cost.toFixed(5)}` :
+    cost < 0.01     ? `$${cost.toFixed(4)}` :
+    cost < 1        ? `$${cost.toFixed(3)}` :
+                      `$${cost.toFixed(2)}`;
+  return prefix + s;
 }
 
 function SectionHeader({
@@ -97,12 +104,12 @@ function SectionHeader({
 
 export function PromptPanel({
   label, color,
-  model, onModelChange, models, modelsLoading,
+  model, onModelChange, models, modelsLoading, hideModelSelector, isDuplicateModel,
   preprocessEnabled, onPreprocessEnabledChange,
   preprocessPrompt, onPreprocessPromptChange,
   preprocessResult, isPreprocessing,
-  prompt, onPromptChange,
-  response, isStreaming, inputTokens, outputTokens, cost,
+  prompt, onPromptChange, hidePromptSection,
+  response, isStreaming, inputTokens, outputTokens, cost, estimatedInputCost,
   disabled, autoCollapse, onRemove,
 }: Props) {
   const [copied, setCopied] = useState(false);
@@ -110,6 +117,7 @@ export function PromptPanel({
   const [promptOpen, setPromptOpen] = useState(true);
   const [outputOpen, setOutputOpen] = useState(true);
   const [generatedPromptOpen, setGeneratedPromptOpen] = useState(false);
+  const [outputHovered, setOutputHovered] = useState(false);
 
   useEffect(() => {
     if (autoCollapse) {
@@ -129,10 +137,9 @@ export function PromptPanel({
   const handleCopy = () => {
     navigator.clipboard.writeText(response);
     setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    setTimeout(() => setCopied(false), 1800);
   };
 
-  // Derive border RGB from color string
   const borderRgb =
     color === '#7950f2' ? '121,80,242' :
     color === '#228be6' ? '34,139,230' :
@@ -153,47 +160,68 @@ export function PromptPanel({
     <Box style={{ display: 'flex', flexDirection: 'column', gap: 0, flex: 1, minWidth: 0 }}>
 
       {/* ── Panel title ── */}
-      <Box style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+      <Box style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, minHeight: 28 }}>
         <Box style={{ width: 8, height: 8, borderRadius: '50%', background: color, boxShadow: `0 0 7px ${color}`, flexShrink: 0 }} />
         <Text fw={700} size="xs" style={{ letterSpacing: '0.1em', textTransform: 'uppercase', color: '#909296', flexShrink: 0 }}>
           {label}
         </Text>
 
-        {/* Model selector */}
-        <Box style={{ flex: 1, minWidth: 0 }}>
-          <Select
-            value={model}
-            onChange={(v) => v && onModelChange(v)}
-            data={models}
-            placeholder={modelsLoading ? 'Loading…' : 'Model'}
-            searchable
-            size="xs"
-            disabled={disabled}
-            styles={{
-              input: { background: 'rgba(255,255,255,0.04)', border: `1px solid rgba(${borderRgb},0.2)`, color: '#C1C2C5', fontSize: 12, height: 24, minHeight: 24, paddingTop: 0, paddingBottom: 0 },
-              dropdown: { background: '#1A1B1E', border: '1px solid rgba(255,255,255,0.1)' },
-              option: { color: '#C1C2C5', fontSize: 12 },
-            }}
-          />
-        </Box>
+        {/* Model selector (compare-models mode) */}
+        {!hideModelSelector && (
+          <Box style={{ flex: 1, minWidth: 0 }}>
+            <Select
+              value={model}
+              onChange={(v) => v && onModelChange(v)}
+              data={models}
+              placeholder={modelsLoading ? 'Loading…' : 'Model'}
+              searchable
+              size="xs"
+              disabled={disabled}
+              styles={{
+                input: {
+                  background: isDuplicateModel ? 'rgba(255,140,0,0.08)' : 'rgba(255,255,255,0.04)',
+                  border: isDuplicateModel ? '1px solid rgba(255,140,0,0.4)' : `1px solid rgba(${borderRgb},0.2)`,
+                  color: '#C1C2C5', fontSize: 12, height: 26, minHeight: 26, paddingTop: 0, paddingBottom: 0,
+                },
+                dropdown: { background: '#1A1B1E', border: '1px solid rgba(255,255,255,0.1)' },
+                option: { color: '#C1C2C5', fontSize: 12 },
+              }}
+            />
+          </Box>
+        )}
+
+        {isDuplicateModel && (
+          <Tooltip label="Duplicate model — each column must use a different model" position="top">
+            <Box style={{ flexShrink: 0, color: '#f59f00', display: 'flex' }}>
+              <IconAlertTriangle size={14} />
+            </Box>
+          </Tooltip>
+        )}
 
         {/* Streaming status */}
         {isPreprocessing && (
-          <Box style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
+          <Box style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
             <Loader size={10} color="violet" />
             <Text size="xs" style={{ color: '#9775fa' }}>pre…</Text>
           </Box>
         )}
         {!isPreprocessing && isStreaming && (
-          <Box style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
-            <Loader size={10} color={loaderColor} />
-          </Box>
+          <Loader size={10} color={loaderColor} style={{ flexShrink: 0 }} />
+        )}
+
+        {/* Pre-run estimated input cost — shown before running */}
+        {estimatedInputCost !== null && estimatedInputCost > 0 && !isStreaming && (
+          <Tooltip label="Estimated input cost based on prompt length" position="top">
+            <Text size="xs" style={{ color: 'rgba(100,160,255,0.55)', fontVariantNumeric: 'tabular-nums', flexShrink: 0, cursor: 'default' }}>
+              {formatCost(estimatedInputCost, '~')} in
+            </Text>
+          </Tooltip>
         )}
 
         {/* Remove button */}
         {onRemove && (
           <Tooltip label="Remove column" position="top">
-            <ActionIcon size="xs" variant="subtle" color="gray" onClick={onRemove} disabled={disabled} style={{ flexShrink: 0 }}>
+            <ActionIcon size="xs" variant="subtle" color="gray" onClick={onRemove} disabled={disabled} style={{ flexShrink: 0, marginLeft: hideModelSelector ? 'auto' : 0 }}>
               <IconX size={11} />
             </ActionIcon>
           </Tooltip>
@@ -210,108 +238,112 @@ export function PromptPanel({
           flexDirection: 'column',
         }}
       >
-        {/* ── PREPROCESSING SECTION ── */}
-        <Box style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', padding: '10px 14px 0' }}>
-          <Box style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <SectionHeader
-              icon={<IconWand size={11} />}
-              label="Preprocessing"
-              open={preprocessOpen && preprocessEnabled}
-              onToggle={() => preprocessEnabled && setPreprocessOpen((v) => !v)}
-              accent={preprocessEnabled ? '#9775fa' : '#5c5f66'}
-              badge={isPreprocessing ? <Badge size="xs" variant="dot" color="violet" ml={4}>running</Badge> : undefined}
-            />
-            <Box style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              {preprocessEnabled && tok(preprocessPrompt) > 0 && (
-                <Text size="xs" c="dimmed">
-                  ~{tok(isPreprocessing || preprocessResult ? preprocessResult : preprocessPrompt).toLocaleString()} tokens{isPreprocessing ? '…' : ''}
-                </Text>
-              )}
-              <Switch
-                size="xs"
-                checked={preprocessEnabled}
-                onChange={(e) => {
-                  onPreprocessEnabledChange(e.currentTarget.checked);
-                  if (e.currentTarget.checked) setPreprocessOpen(true);
-                }}
-                color="violet"
-                styles={{ track: { background: preprocessEnabled ? undefined : 'rgba(255,255,255,0.1)', border: 'none' } }}
+        {/* ── PREPROCESSING (only in compare-prompts mode) ── */}
+        {!hidePromptSection && (
+          <Box style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', padding: '10px 14px 0' }}>
+            <Box style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <SectionHeader
+                icon={<IconWand size={11} />}
+                label="Preprocessing"
+                open={preprocessOpen && preprocessEnabled}
+                onToggle={() => preprocessEnabled && setPreprocessOpen((v) => !v)}
+                accent={preprocessEnabled ? '#9775fa' : '#5c5f66'}
+                badge={isPreprocessing ? <Badge size="xs" variant="dot" color="violet" ml={4}>running</Badge> : undefined}
               />
+              <Box style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                {preprocessEnabled && tok(preprocessPrompt) > 0 && (
+                  <Text size="xs" c="dimmed">
+                    ~{tok(isPreprocessing || preprocessResult ? preprocessResult : preprocessPrompt).toLocaleString()} tokens{isPreprocessing ? '…' : ''}
+                  </Text>
+                )}
+                <Switch
+                  size="xs"
+                  checked={preprocessEnabled}
+                  onChange={(e) => {
+                    onPreprocessEnabledChange(e.currentTarget.checked);
+                    if (e.currentTarget.checked) setPreprocessOpen(true);
+                  }}
+                  color="violet"
+                  styles={{ track: { background: preprocessEnabled ? undefined : 'rgba(255,255,255,0.1)', border: 'none' } }}
+                />
+              </Box>
             </Box>
-          </Box>
 
-          <Collapse in={preprocessEnabled && preprocessOpen}>
-            <Box pb={12} pt={8}>
-              <Textarea
-                value={preprocessPrompt}
-                onChange={(e) => onPreprocessPromptChange(e.currentTarget.value)}
-                placeholder="Enter preprocessing instructions… the user prompt will be appended and the result used as the actual prompt."
-                minRows={3}
-                maxRows={8}
-                autosize
-                disabled={disabled}
-                styles={{
-                  input: { background: 'rgba(121,80,242,0.05)', border: '1px solid rgba(121,80,242,0.2)', color: '#C1C2C5', fontSize: '13px', lineHeight: '1.6' },
-                }}
-              />
+            <Collapse in={preprocessEnabled && preprocessOpen}>
+              <Box pb={12} pt={8}>
+                <Textarea
+                  value={preprocessPrompt}
+                  onChange={(e) => onPreprocessPromptChange(e.currentTarget.value)}
+                  placeholder="Enter preprocessing instructions… the user prompt will be appended and the result used as the actual prompt."
+                  minRows={3}
+                  maxRows={8}
+                  autosize
+                  disabled={disabled}
+                  styles={{
+                    input: { background: 'rgba(121,80,242,0.05)', border: '1px solid rgba(121,80,242,0.2)', color: '#C1C2C5', fontSize: '13px', lineHeight: '1.6' },
+                  }}
+                />
 
-              {preprocessResult && (
-                <Box mt={8}>
-                  <Box style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <SectionHeader
-                      icon={<IconCode size={11} />}
-                      label="Generated Prompt"
-                      open={generatedPromptOpen}
-                      onToggle={() => setGeneratedPromptOpen((v) => !v)}
-                      accent="#6c6cff"
-                    />
-                    {generatedPromptOpen && tok(preprocessResult) > 0 && (
-                      <Text size="xs" c="dimmed">~{tok(preprocessResult).toLocaleString()} tokens</Text>
-                    )}
-                  </Box>
-                  <Collapse in={generatedPromptOpen}>
-                    <Box mt={6} p={10} style={{ background: 'rgba(108,108,255,0.06)', border: '1px solid rgba(108,108,255,0.15)', borderRadius: 6, fontSize: 12, color: '#A6A7AB', fontFamily: '"JetBrains Mono", monospace', lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-                      {preprocessResult}
-                      {isPreprocessing && <Box component="span" style={{ display: 'inline-block', width: 2, height: '1em', background: '#9775fa', marginLeft: 2, verticalAlign: 'text-bottom', animation: 'blink 0.8s step-end infinite' }} />}
+                {preprocessResult && (
+                  <Box mt={8}>
+                    <Box style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <SectionHeader
+                        icon={<IconCode size={11} />}
+                        label="Generated Prompt"
+                        open={generatedPromptOpen}
+                        onToggle={() => setGeneratedPromptOpen((v) => !v)}
+                        accent="#6c6cff"
+                      />
+                      {generatedPromptOpen && tok(preprocessResult) > 0 && (
+                        <Text size="xs" c="dimmed">~{tok(preprocessResult).toLocaleString()} tokens</Text>
+                      )}
                     </Box>
-                  </Collapse>
-                </Box>
+                    <Collapse in={generatedPromptOpen}>
+                      <Box mt={6} p={10} style={{ background: 'rgba(108,108,255,0.06)', border: '1px solid rgba(108,108,255,0.15)', borderRadius: 6, fontSize: 12, color: '#A6A7AB', fontFamily: '"JetBrains Mono", monospace', lineHeight: 1.6, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                        {preprocessResult}
+                        {isPreprocessing && <Box component="span" style={{ display: 'inline-block', width: 2, height: '1em', background: '#9775fa', marginLeft: 2, verticalAlign: 'text-bottom', animation: 'blink 0.8s step-end infinite' }} />}
+                      </Box>
+                    </Collapse>
+                  </Box>
+                )}
+              </Box>
+            </Collapse>
+          </Box>
+        )}
+
+        {/* ── PROMPT SECTION (compare-prompts mode) ── */}
+        {!hidePromptSection && (
+          <Box style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', padding: '10px 14px 0' }}>
+            <Box style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+              <SectionHeader
+                icon={<IconMessageCircle size={11} />}
+                label="Prompt"
+                open={promptOpen}
+                onToggle={() => setPromptOpen((v) => !v)}
+                accent={color}
+              />
+              {tok(prompt) > 0 && !disabled && (
+                <Text size="xs" c="dimmed">~{tok(prompt).toLocaleString()} tokens</Text>
               )}
             </Box>
-          </Collapse>
-        </Box>
-
-        {/* ── PROMPT SECTION ── */}
-        <Box style={{ borderBottom: '1px solid rgba(255,255,255,0.05)', padding: '10px 14px 0' }}>
-          <Box style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <SectionHeader
-              icon={<IconMessageCircle size={11} />}
-              label="Prompt"
-              open={promptOpen}
-              onToggle={() => setPromptOpen((v) => !v)}
-              accent={color}
-            />
-            {tok(prompt) > 0 && !disabled && (
-              <Text size="xs" c="dimmed">~{tok(prompt).toLocaleString()} tokens</Text>
-            )}
+            <Collapse in={promptOpen}>
+              <Box pb={12} pt={8}>
+                <Textarea
+                  value={prompt}
+                  onChange={(e) => onPromptChange(e.currentTarget.value)}
+                  placeholder={`Enter ${label.toLowerCase()}…`}
+                  minRows={4}
+                  maxRows={14}
+                  autosize
+                  disabled={disabled}
+                  styles={{
+                    input: { background: `rgba(${borderRgb},0.04)`, border: `1px solid rgba(${borderRgb},0.2)`, color: '#C1C2C5', fontSize: '13px', lineHeight: '1.6' },
+                  }}
+                />
+              </Box>
+            </Collapse>
           </Box>
-          <Collapse in={promptOpen}>
-            <Box pb={12} pt={8}>
-              <Textarea
-                value={prompt}
-                onChange={(e) => onPromptChange(e.currentTarget.value)}
-                placeholder={`Enter ${label.toLowerCase()}…`}
-                minRows={4}
-                maxRows={14}
-                autosize
-                disabled={disabled}
-                styles={{
-                  input: { background: `rgba(${borderRgb},0.04)`, border: `1px solid rgba(${borderRgb},0.2)`, color: '#C1C2C5', fontSize: '13px', lineHeight: '1.6' },
-                }}
-              />
-            </Box>
-          </Collapse>
-        </Box>
+        )}
 
         {/* ── OUTPUT SECTION ── */}
         <Box style={{ padding: '10px 14px 14px' }}>
@@ -333,7 +365,7 @@ export function PromptPanel({
               badge={isStreaming ? <Badge size="xs" variant="dot" color="violet" ml={4}>streaming</Badge> : undefined}
             />
             <Box style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              {/* Token counts — actual if available, estimated if streaming */}
+              {/* Actual token counts after run */}
               {(outputTokens > 0 || (isStreaming && response)) && (
                 <Text size="xs" c="dimmed">
                   {outputTokens > 0
@@ -342,24 +374,22 @@ export function PromptPanel({
                   }
                 </Text>
               )}
-              {/* Cost */}
+              {/* Post-run cost */}
               {cost !== null && cost >= 0 && (
                 <Text size="xs" style={{ color: '#2dd4bf', fontVariantNumeric: 'tabular-nums' }}>
                   {formatCost(cost)}
                 </Text>
               )}
-              {response && !isStreaming && (
-                <Tooltip label={copied ? 'Copied!' : 'Copy'} position="left">
-                  <ActionIcon size="xs" variant="subtle" color={copied ? 'green' : 'gray'} onClick={handleCopy}>
-                    {copied ? <IconCheck size={12} /> : <IconCopy size={12} />}
-                  </ActionIcon>
-                </Tooltip>
-              )}
             </Box>
           </Box>
 
           <Collapse in={outputOpen}>
-            <Box mt={10} style={{ minHeight: 60 }}>
+            <Box
+              mt={10}
+              style={{ minHeight: 60, position: 'relative' }}
+              onMouseEnter={() => setOutputHovered(true)}
+              onMouseLeave={() => setOutputHovered(false)}
+            >
               {!response && !isStreaming && (
                 <Text size="sm" c="dimmed" style={{ fontStyle: 'italic' }}>Response will appear here…</Text>
               )}
@@ -370,10 +400,41 @@ export function PromptPanel({
                 </Box>
               )}
               {response && (
-                <Box>
+                <>
+                  {/* Floating copy button */}
+                  <Box
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      right: 0,
+                      zIndex: 10,
+                      opacity: outputHovered && !isStreaming ? 1 : 0,
+                      transition: 'opacity 0.15s ease',
+                      pointerEvents: outputHovered && !isStreaming ? 'auto' : 'none',
+                    }}
+                  >
+                    <Tooltip label={copied ? 'Copied!' : 'Copy response'} position="left">
+                      <ActionIcon
+                        size="md"
+                        onClick={handleCopy}
+                        style={{
+                          background: copied ? 'rgba(32,201,151,0.15)' : 'rgba(15,15,20,0.85)',
+                          border: `1px solid ${copied ? 'rgba(32,201,151,0.4)' : `rgba(${borderRgb},0.3)`}`,
+                          backdropFilter: 'blur(8px)',
+                          color: copied ? '#2dd4bf' : '#909296',
+                          borderRadius: 8,
+                          boxShadow: '0 2px 12px rgba(0,0,0,0.5)',
+                          transition: 'all 0.15s ease',
+                        }}
+                      >
+                        {copied ? <IconCheck size={14} /> : <IconCopy size={14} />}
+                      </ActionIcon>
+                    </Tooltip>
+                  </Box>
+
                   <MarkdownOutput content={response} />
                   {isStreaming && <Box component="span" style={{ display: 'inline-block', width: 2, height: '1em', background: color, marginLeft: 2, verticalAlign: 'text-bottom', animation: 'blink 0.8s step-end infinite' }} />}
-                </Box>
+                </>
               )}
             </Box>
           </Collapse>
