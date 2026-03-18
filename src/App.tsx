@@ -1,7 +1,6 @@
 import {
   Box,
   TextInput,
-  Select,
   Button,
   Group,
   Switch,
@@ -24,131 +23,203 @@ import {
   IconTrash,
   IconSparkles,
   IconDeviceFloppy,
+  IconPlus,
 } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { GeometricCanvas } from './components/GeometricCanvas';
 import { PromptPanel } from './components/PromptPanel';
 import { MarkdownOutput } from './components/MarkdownOutput';
-import { createClient, runPrompt, evaluateResponses, MODELS } from './openai';
+import {
+  createClient,
+  runPrompt,
+  evaluateResponses,
+  fetchModels,
+  calcCost,
+  type ModelGroup,
+  type PricingMap,
+  type RunResult,
+} from './openai';
 
+// ── Column types ──────────────────────────────────────────────────────────────
 
-interface PreprocessState {
-  enabled: boolean;
+interface ColumnConfig {
+  id: string;
+  model: string;
   prompt: string;
+  preprocessEnabled: boolean;
+  preprocessPrompt: string;
 }
 
-// Keys used in sessionStorage
+interface ColumnRunState {
+  response: string;
+  preprocessResult: string;
+  isStreaming: boolean;
+  isPreprocessing: boolean;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+const emptyRunState = (): ColumnRunState => ({
+  response: '', preprocessResult: '',
+  isStreaming: false, isPreprocessing: false,
+  inputTokens: 0, outputTokens: 0,
+});
+
+const COLUMN_COLORS = ['#7950f2', '#228be6', '#20c997', '#f59f00', '#fa5252', '#e64980'];
+const COLUMN_LABELS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+const DEFAULT_MODEL = 'gpt-4.1';
+const EVAL_MODEL = 'gpt-4.1';
+
+function makeColumn(model = DEFAULT_MODEL): ColumnConfig {
+  return { id: `col-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, model, prompt: '', preprocessEnabled: false, preprocessPrompt: '' };
+}
+
+// ── Persistence ───────────────────────────────────────────────────────────────
+
 const KEYS = {
-  persist:        'pe-persist',
-  apiKey:         'pe-api-key',
-  model:          'pe-model',
-  promptA:        'pe-prompt-a',
-  promptB:        'pe-prompt-b',
-  preAEnabled:    'pe-pre-a-enabled',
-  preAPrompt:     'pe-pre-a-prompt',
-  preBEnabled:    'pe-pre-b-enabled',
-  preBPrompt:     'pe-pre-b-prompt',
-  evalEnabled:    'pe-eval-enabled',
+  persist:  'pe-persist',
+  apiKey:   'pe-api-key',
+  columns:  'pe-columns-v2',
+  eval:     'pe-eval-enabled',
 } as const;
 
-// Read persisted flag once at module evaluation so state initializers can use it
 const persistedOnLoad = sessionStorage.getItem(KEYS.persist) === 'true';
 const ss = (key: string, fallback: string) =>
   persistedOnLoad ? (sessionStorage.getItem(key) ?? fallback) : fallback;
 
+const defaultColumns: ColumnConfig[] = [
+  makeColumn('gpt-4.1'),
+  makeColumn('gpt-4.1-mini'),
+];
+
+function loadColumns(): ColumnConfig[] {
+  try {
+    const raw = ss(KEYS.columns, '');
+    if (raw) return JSON.parse(raw);
+  } catch { /* ignore */ }
+  return defaultColumns;
+}
+
+// ── App ───────────────────────────────────────────────────────────────────────
+
 export default function App() {
   const [persist, setPersist] = useState(persistedOnLoad);
-  const [apiKey,  setApiKey]  = useState(() => ss(KEYS.apiKey,  ''));
+  const [apiKey, setApiKey] = useState(() => ss(KEYS.apiKey, ''));
   const [showKey, setShowKey] = useState(false);
-  const [model,   setModel]   = useState(() => ss(KEYS.model, 'gpt-4.1'));
+  const [evalEnabled, setEvalEnabled] = useState(() => ss(KEYS.eval, 'false') === 'true');
 
-  const [promptA, setPromptA] = useState(() => ss(KEYS.promptA, ''));
-  const [promptB, setPromptB] = useState(() => ss(KEYS.promptB, ''));
-  const [preprocessA, setPreprocessA] = useState<PreprocessState>(() => ({
-    enabled: ss(KEYS.preAEnabled, 'false') === 'true',
-    prompt:  ss(KEYS.preAPrompt,  ''),
-  }));
-  const [preprocessB, setPreprocessB] = useState<PreprocessState>(() => ({
-    enabled: ss(KEYS.preBEnabled, 'false') === 'true',
-    prompt:  ss(KEYS.preBPrompt,  ''),
-  }));
-  const [evalEnabled, setEvalEnabled] = useState(() => ss(KEYS.evalEnabled, 'false') === 'true');
+  const [columns, setColumns] = useState<ColumnConfig[]>(loadColumns);
+  const [runStates, setRunStates] = useState<Record<string, ColumnRunState>>({});
 
-  // Run state
-  const [responseA, setResponseA] = useState('');
-  const [responseB, setResponseB] = useState('');
-  const [preprocessResultA, setPreprocessResultA] = useState('');
-  const [preprocessResultB, setPreprocessResultB] = useState('');
-  const [streamingA,    setStreamingA]    = useState(false);
-  const [streamingB,    setStreamingB]    = useState(false);
-  const [preprocessingA, setPreprocessingA] = useState(false);
-  const [preprocessingB, setPreprocessingB] = useState(false);
-  const [evalResponse,  setEvalResponse]  = useState('');
+  const [evalResponse, setEvalResponse] = useState('');
   const [streamingEval, setStreamingEval] = useState(false);
-  const [isRunning,  setIsRunning]  = useState(false);
+  const [isRunning, setIsRunning] = useState(false);
   const [autoCollapse, setAutoCollapse] = useState(false);
   const [error, setError] = useState('');
 
-  // Save a single key — only when persist is on
+  const [models, setModels] = useState<ModelGroup[]>([]);
+  const [pricingMap, setPricingMap] = useState<PricingMap>({});
+  const [modelsLoading, setModelsLoading] = useState(true);
+
+  // Fetch model list on mount
+  useEffect(() => {
+    fetchModels()
+      .then(({ groups, pricingMap }) => { setModels(groups); setPricingMap(pricingMap); })
+      .catch(() => { /* fall back to empty — user can still type a model id */ })
+      .finally(() => setModelsLoading(false));
+  }, []);
+
+  // ── Persistence helpers ────────────────────────────────────────────────────
+
   const save = useCallback((key: string, value: string) => {
     if (persist) sessionStorage.setItem(key, value);
   }, [persist]);
 
-  // Toggle persistence: when turning on, flush current state; when off, clear all keys
+  const saveColumns = useCallback((cols: ColumnConfig[]) => {
+    if (persist) sessionStorage.setItem(KEYS.columns, JSON.stringify(cols));
+  }, [persist]);
+
   const handlePersistToggle = (on: boolean) => {
     setPersist(on);
     sessionStorage.setItem(KEYS.persist, String(on));
     if (on) {
-      sessionStorage.setItem(KEYS.apiKey,      apiKey);
-      sessionStorage.setItem(KEYS.model,       model);
-      sessionStorage.setItem(KEYS.promptA,     promptA);
-      sessionStorage.setItem(KEYS.promptB,     promptB);
-      sessionStorage.setItem(KEYS.preAEnabled, String(preprocessA.enabled));
-      sessionStorage.setItem(KEYS.preAPrompt,  preprocessA.prompt);
-      sessionStorage.setItem(KEYS.preBEnabled, String(preprocessB.enabled));
-      sessionStorage.setItem(KEYS.preBPrompt,  preprocessB.prompt);
-      sessionStorage.setItem(KEYS.evalEnabled, String(evalEnabled));
+      sessionStorage.setItem(KEYS.apiKey,  apiKey);
+      sessionStorage.setItem(KEYS.columns, JSON.stringify(columns));
+      sessionStorage.setItem(KEYS.eval,    String(evalEnabled));
     } else {
       Object.values(KEYS).forEach((k) => k !== KEYS.persist && sessionStorage.removeItem(k));
     }
   };
 
-  // ── Run logic ──
-  const runPanel = useCallback(
-    async (
-      side: 'A' | 'B',
-      prompt: string,
-      preprocess: PreprocessState,
-      client: ReturnType<typeof createClient>
-    ): Promise<[string, string]> => {
-      let effectivePrompt = prompt;
+  // ── Column management ──────────────────────────────────────────────────────
 
-      if (preprocess.enabled && preprocess.prompt.trim()) {
-        const combined = `${preprocess.prompt.trim()}\n\n${prompt}`;
-        if (side === 'A') setPreprocessingA(true); else setPreprocessingB(true);
+  const updateColumn = useCallback((id: string, patch: Partial<ColumnConfig>) => {
+    setColumns((prev) => {
+      const next = prev.map((c) => c.id === id ? { ...c, ...patch } : c);
+      saveColumns(next);
+      return next;
+    });
+  }, [saveColumns]);
+
+  const addColumn = () => {
+    const last = columns[columns.length - 1];
+    const col = makeColumn(last?.model ?? DEFAULT_MODEL);
+    setColumns((prev) => { const next = [...prev, col]; saveColumns(next); return next; });
+  };
+
+  const removeColumn = (id: string) => {
+    setColumns((prev) => { const next = prev.filter((c) => c.id !== id); saveColumns(next); return next; });
+    setRunStates((prev) => { const { [id]: _, ...rest } = prev; return rest; });
+  };
+
+  // ── Run state helpers ──────────────────────────────────────────────────────
+
+  const appendField = useCallback((id: string, field: 'response' | 'preprocessResult', delta: string) => {
+    setRunStates((prev) => {
+      const col = prev[id] ?? emptyRunState();
+      return { ...prev, [id]: { ...col, [field]: col[field] + delta } };
+    });
+  }, []);
+
+  const setField = useCallback(<K extends keyof ColumnRunState>(id: string, field: K, value: ColumnRunState[K]) => {
+    setRunStates((prev) => {
+      const col = prev[id] ?? emptyRunState();
+      return { ...prev, [id]: { ...col, [field]: value } };
+    });
+  }, []);
+
+  // ── Run logic ──────────────────────────────────────────────────────────────
+
+  const runColumn = useCallback(
+    async (col: ColumnConfig, client: ReturnType<typeof createClient>): Promise<[string, RunResult]> => {
+      let effectivePrompt = col.prompt;
+
+      if (col.preprocessEnabled && col.preprocessPrompt.trim()) {
+        const combined = `${col.preprocessPrompt.trim()}\n\n${col.prompt}`;
+        setField(col.id, 'isPreprocessing', true);
         try {
-          effectivePrompt = await runPrompt(client, model, combined, (delta) => {
-            if (side === 'A') setPreprocessResultA((p) => p + delta);
-            else              setPreprocessResultB((p) => p + delta);
-          });
+          const result = await runPrompt(client, col.model, combined, (d) => appendField(col.id, 'preprocessResult', d));
+          effectivePrompt = result.text;
         } finally {
-          if (side === 'A') setPreprocessingA(false); else setPreprocessingB(false);
+          setField(col.id, 'isPreprocessing', false);
         }
       }
 
-      if (side === 'A') setStreamingA(true); else setStreamingB(true);
+      setField(col.id, 'isStreaming', true);
       try {
-        const response = await runPrompt(client, model, effectivePrompt, (delta) => {
-          if (side === 'A') setResponseA((p) => p + delta);
-          else              setResponseB((p) => p + delta);
-        });
-        return [effectivePrompt, response];
-      } finally {
-        if (side === 'A') setStreamingA(false); else setStreamingB(false);
+        const result = await runPrompt(client, col.model, effectivePrompt, (d) => appendField(col.id, 'response', d));
+        setRunStates((prev) => ({
+          ...prev,
+          [col.id]: { ...(prev[col.id] ?? emptyRunState()), isStreaming: false, inputTokens: result.inputTokens, outputTokens: result.outputTokens },
+        }));
+        return [effectivePrompt, result];
+      } catch (err) {
+        setField(col.id, 'isStreaming', false);
+        throw err;
       }
     },
-    [model]
+    [appendField, setField],
   );
 
   const handleRun = useCallback(async () => {
@@ -156,27 +227,34 @@ export default function App() {
       notifications.show({ title: 'API Key Required', message: 'Please enter your OpenAI API key', color: 'red', icon: <IconAlertCircle size={16} /> });
       return;
     }
-    if (!promptA.trim() && !promptB.trim()) {
+    const active = columns.filter((c) => c.prompt.trim());
+    if (!active.length) {
       notifications.show({ title: 'No Prompts', message: 'Enter at least one prompt', color: 'orange' });
       return;
     }
 
     setError(''); setIsRunning(true); setAutoCollapse(true);
-    setResponseA(''); setResponseB('');
-    setPreprocessResultA(''); setPreprocessResultB('');
+    setRunStates({});
     setEvalResponse('');
 
     const client = createClient(apiKey.trim());
     try {
-      const taskA = promptA.trim() ? runPanel('A', promptA, preprocessA, client) : Promise.resolve(['', ''] as [string, string]);
-      const taskB = promptB.trim() ? runPanel('B', promptB, preprocessB, client) : Promise.resolve(['', ''] as [string, string]);
-      const [[effA, resA], [effB, resB]] = await Promise.all([taskA, taskB]);
+      const results = await Promise.all(active.map((col) => runColumn(col, client)));
 
-      if (evalEnabled && resA && resB) {
-        setStreamingEval(true);
-        await evaluateResponses(client, model, effA || promptA, resA, effB || promptB, resB, (delta) => {
-          setEvalResponse((p) => p + delta);
-        }).finally(() => setStreamingEval(false));
+      if (evalEnabled && results.length >= 2) {
+        const entries = results
+          .map(([effPrompt, result], i) => ({
+            label: `Column ${COLUMN_LABELS[columns.findIndex((c) => c.id === active[i].id)] ?? i + 1}`,
+            prompt: effPrompt || active[i].prompt,
+            response: result.text,
+          }))
+          .filter((e) => e.response);
+
+        if (entries.length >= 2) {
+          setStreamingEval(true);
+          await evaluateResponses(client, EVAL_MODEL, entries, (d) => setEvalResponse((p) => p + d))
+            .finally(() => setStreamingEval(false));
+        }
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
@@ -185,32 +263,26 @@ export default function App() {
     } finally {
       setIsRunning(false); setAutoCollapse(false);
     }
-  }, [apiKey, model, promptA, promptB, preprocessA, preprocessB, evalEnabled, runPanel]);
+  }, [apiKey, columns, evalEnabled, runColumn]);
 
   const handleClear = () => {
-    setResponseA(''); setResponseB('');
-    setPreprocessResultA(''); setPreprocessResultB('');
-    setEvalResponse(''); setError('');
+    setRunStates({});
+    setEvalResponse('');
+    setError('');
   };
+
+  const hasAnyResponse = columns.some((c) => runStates[c.id]?.response);
 
   return (
     <Box style={{ position: 'relative', minHeight: '100vh' }}>
       <GeometricCanvas />
 
-      <Box style={{ position: 'relative', zIndex: 1, maxWidth: 1400, margin: '0 auto', padding: '16px 24px 64px' }}>
+      <Box style={{ position: 'relative', zIndex: 1, maxWidth: columns.length > 2 ? '100%' : 1400, margin: '0 auto', padding: '16px 24px 64px' }}>
 
         {/* ── HEADER BAR ── */}
-        <Paper
-          style={{
-            background: 'rgba(255,255,255,0.025)',
-            border: '1px solid rgba(255,255,255,0.07)',
-            borderRadius: 12,
-            padding: '12px 18px',
-            marginBottom: 16,
-            backdropFilter: 'blur(16px)',
-          }}
-        >
+        <Paper style={{ background: 'rgba(255,255,255,0.025)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 12, padding: '12px 18px', marginBottom: 16, backdropFilter: 'blur(16px)' }}>
           <Box style={{ display: 'flex', gap: 14, alignItems: 'center', flexWrap: 'wrap' }}>
+
             {/* Logo */}
             <Box style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
               <Box style={{ width: 26, height: 26, borderRadius: 7, background: 'linear-gradient(135deg, #7950f2, #9775fa)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 0 14px rgba(121,80,242,0.45)' }}>
@@ -240,24 +312,7 @@ export default function App() {
                     </ActionIcon>
                   </Tooltip>
                 }
-                styles={{
-                  input: { background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', color: '#C1C2C5', fontSize: 13 },
-                }}
-              />
-            </Box>
-
-            {/* Model */}
-            <Box style={{ width: 165 }}>
-              <Select
-                value={model}
-                onChange={(v) => { if (v) { setModel(v); save(KEYS.model, v); } }}
-                data={MODELS}
-                size="xs"
-                styles={{
-                  input: { background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', color: '#C1C2C5', fontSize: 13 },
-                  dropdown: { background: '#1A1B1E', border: '1px solid rgba(255,255,255,0.1)' },
-                  option: { color: '#C1C2C5', fontSize: 13 },
-                }}
+                styles={{ input: { background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', color: '#C1C2C5', fontSize: 13 } }}
               />
             </Box>
 
@@ -270,7 +325,7 @@ export default function App() {
                 </Box>
               }
               checked={evalEnabled}
-              onChange={(e) => { setEvalEnabled(e.currentTarget.checked); save(KEYS.evalEnabled, String(e.currentTarget.checked)); }}
+              onChange={(e) => { setEvalEnabled(e.currentTarget.checked); save(KEYS.eval, String(e.currentTarget.checked)); }}
               color="violet"
               size="xs"
               styles={{ track: { background: evalEnabled ? undefined : 'rgba(255,255,255,0.1)', border: 'none' } }}
@@ -297,19 +352,33 @@ export default function App() {
 
             {/* Actions */}
             <Group gap={6} style={{ marginLeft: 'auto', flexShrink: 0 }}>
-              {(responseA || responseB) && (
+              <Tooltip label="Add column">
+                <ActionIcon
+                  variant="subtle"
+                  color="gray"
+                  size="sm"
+                  onClick={addColumn}
+                  disabled={isRunning || columns.length >= 6}
+                  style={{ border: '1px solid rgba(255,255,255,0.1)' }}
+                >
+                  <IconPlus size={14} />
+                </ActionIcon>
+              </Tooltip>
+
+              {hasAnyResponse && (
                 <Tooltip label="Clear results">
                   <ActionIcon variant="subtle" color="gray" size="sm" onClick={handleClear} disabled={isRunning}>
                     <IconTrash size={14} />
                   </ActionIcon>
                 </Tooltip>
               )}
+
               <Button
                 leftSection={<IconBolt size={14} />}
                 onClick={handleRun}
                 loading={isRunning}
                 size="xs"
-                disabled={!apiKey.trim() || (!promptA.trim() && !promptB.trim())}
+                disabled={!apiKey.trim() || !columns.some((c) => c.prompt.trim())}
                 style={{ background: isRunning ? undefined : 'linear-gradient(135deg, #7950f2, #9775fa)', border: 'none', fontWeight: 600, letterSpacing: '0.02em', boxShadow: isRunning ? undefined : '0 0 16px rgba(121,80,242,0.35)' }}
               >
                 {isRunning ? 'Running…' : 'Run'}
@@ -325,44 +394,41 @@ export default function App() {
           </Alert>
         )}
 
-        {/* ── PANELS ── */}
-        <Box style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
-          <PromptPanel
-            label="Prompt A"
-            color="#7950f2"
-            preprocessEnabled={preprocessA.enabled}
-            onPreprocessEnabledChange={(v) => { setPreprocessA((s) => ({ ...s, enabled: v })); save(KEYS.preAEnabled, String(v)); }}
-            preprocessPrompt={preprocessA.prompt}
-            onPreprocessPromptChange={(v) => setPreprocessA((s) => ({ ...s, prompt: v }))}
-            onPreprocessPromptBlur={() => save(KEYS.preAPrompt, preprocessA.prompt)}
-            preprocessResult={preprocessResultA}
-            isPreprocessing={preprocessingA}
-            prompt={promptA}
-            onPromptChange={setPromptA}
-            onPromptBlur={() => save(KEYS.promptA, promptA)}
-            response={responseA}
-            isStreaming={streamingA}
-            disabled={isRunning}
-            autoCollapse={autoCollapse}
-          />
-          <PromptPanel
-            label="Prompt B"
-            color="#228be6"
-            preprocessEnabled={preprocessB.enabled}
-            onPreprocessEnabledChange={(v) => { setPreprocessB((s) => ({ ...s, enabled: v })); save(KEYS.preBEnabled, String(v)); }}
-            preprocessPrompt={preprocessB.prompt}
-            onPreprocessPromptChange={(v) => setPreprocessB((s) => ({ ...s, prompt: v }))}
-            onPreprocessPromptBlur={() => save(KEYS.preBPrompt, preprocessB.prompt)}
-            preprocessResult={preprocessResultB}
-            isPreprocessing={preprocessingB}
-            prompt={promptB}
-            onPromptChange={setPromptB}
-            onPromptBlur={() => save(KEYS.promptB, promptB)}
-            response={responseB}
-            isStreaming={streamingB}
-            disabled={isRunning}
-            autoCollapse={autoCollapse}
-          />
+        {/* ── COLUMNS ── */}
+        <Box style={{ display: 'grid', gridTemplateColumns: `repeat(${columns.length}, minmax(300px, 1fr))`, gap: 18, overflowX: 'auto' }}>
+          {columns.map((col, i) => {
+            const rs = runStates[col.id] ?? emptyRunState();
+            const cost = rs.inputTokens || rs.outputTokens
+              ? calcCost(col.model, rs.inputTokens, rs.outputTokens, pricingMap)
+              : null;
+            return (
+              <PromptPanel
+                key={col.id}
+                label={`Prompt ${COLUMN_LABELS[i] ?? i + 1}`}
+                color={COLUMN_COLORS[i % COLUMN_COLORS.length]}
+                model={col.model}
+                onModelChange={(m) => updateColumn(col.id, { model: m })}
+                models={models}
+                modelsLoading={modelsLoading}
+                preprocessEnabled={col.preprocessEnabled}
+                onPreprocessEnabledChange={(v) => updateColumn(col.id, { preprocessEnabled: v })}
+                preprocessPrompt={col.preprocessPrompt}
+                onPreprocessPromptChange={(v) => updateColumn(col.id, { preprocessPrompt: v })}
+                preprocessResult={rs.preprocessResult}
+                isPreprocessing={rs.isPreprocessing}
+                prompt={col.prompt}
+                onPromptChange={(v) => updateColumn(col.id, { prompt: v })}
+                response={rs.response}
+                isStreaming={rs.isStreaming}
+                inputTokens={rs.inputTokens}
+                outputTokens={rs.outputTokens}
+                cost={cost}
+                disabled={isRunning}
+                autoCollapse={autoCollapse}
+                onRemove={columns.length > 1 ? () => removeColumn(col.id) : undefined}
+              />
+            );
+          })}
         </Box>
 
         {/* ── AI EVALUATION ── */}
@@ -387,9 +453,7 @@ export default function App() {
                 ? <MarkdownOutput content={evalResponse} />
                 : <Text size="sm" c="dimmed" style={{ fontStyle: 'italic' }}>Evaluation in progress…</Text>
               }
-              {streamingEval && (
-                <Box component="span" style={{ display: 'inline-block', width: 2, height: '1em', background: '#9775fa', marginLeft: 2, verticalAlign: 'text-bottom', animation: 'blink 0.8s step-end infinite' }} />
-              )}
+              {streamingEval && <Box component="span" style={{ display: 'inline-block', width: 2, height: '1em', background: '#9775fa', marginLeft: 2, verticalAlign: 'text-bottom', animation: 'blink 0.8s step-end infinite' }} />}
             </Paper>
           </Box>
         </Collapse>
