@@ -132,6 +132,18 @@ jobs:
           fi
           echo "</body></html>" >> _site/preview/index.html
 
+          # 5. Generate branches.json manifest for the app UI
+          BRANCHES='["master"'
+          if [ -d _site/preview ]; then
+            for d in _site/preview/*/; do
+              [ -d "$d" ] || continue
+              S=$(basename "$d")
+              BRANCHES="${BRANCHES},\"${S}\""
+            done
+          fi
+          BRANCHES="${BRANCHES}]"
+          echo "$BRANCHES" > _site/branches.json
+
       - uses: actions/upload-pages-artifact@v3
         with:
           path: _site

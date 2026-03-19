@@ -35,6 +35,7 @@ import {
   IconChevronRight,
   IconSend,
   IconRotate,
+  IconGitBranch,
 } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -86,6 +87,14 @@ const emptyRunState = (): ColumnRunState => ({
   startTime: null, firstTokenTime: null, endTime: null,
   sentPrompt: null,
 });
+
+const SITE_BASE = '/prompt-eval';
+
+function currentBranch(): string {
+  const path = window.location.pathname;
+  const match = path.match(/^\/prompt-eval\/preview\/([^/]+)/);
+  return match ? match[1] : 'master';
+}
 
 const COLUMN_COLORS = ['#7950f2', '#228be6', '#20c997', '#f59f00', '#fa5252', '#e64980'];
 const COLUMN_LABELS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
@@ -157,12 +166,19 @@ export default function App() {
   const [evalDone, setEvalDone] = useState(false);
 
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [branches, setBranches] = useState<string[]>([]);
+  const activeBranch = currentBranch();
 
   useEffect(() => {
     fetchModels()
       .then(({ groups, pricingMap }) => { setModels(groups); setPricingMap(pricingMap); })
       .catch(() => {})
       .finally(() => setModelsLoading(false));
+
+    fetch(`${SITE_BASE}/branches.json`)
+      .then((r) => r.ok ? r.json() : [])
+      .then((b: string[]) => setBranches(b))
+      .catch(() => {});
   }, []);
 
   // ── Persistence ────────────────────────────────────────────────────────────
@@ -978,12 +994,33 @@ export default function App() {
         </Collapse>
 
         {/* Footer */}
-        <Box style={{ textAlign: 'center', marginTop: 52, paddingTop: 20, borderTop: '1px solid rgba(255,255,255,0.05)' }}>
+        <Box style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 16, marginTop: 52, paddingTop: 20, borderTop: '1px solid rgba(255,255,255,0.05)' }}>
           <Text size="xs" c="dimmed">
             {persist
               ? 'Fields saved in session storage — cleared when this tab closes'
               : 'API key never stored — all calls go directly to OpenAI from your browser'}
           </Text>
+          {branches.length > 1 && (
+            <>
+              <Box style={{ width: 1, height: 14, background: 'rgba(255,255,255,0.08)', flexShrink: 0 }} />
+              <Select
+                value={activeBranch}
+                onChange={(v) => {
+                  if (!v || v === activeBranch) return;
+                  const url = v === 'master' ? `${SITE_BASE}/` : `${SITE_BASE}/preview/${v}/`;
+                  window.location.href = url;
+                }}
+                data={branches.map((b) => ({ value: b, label: b === 'master' ? 'master (production)' : b }))}
+                size="xs"
+                leftSection={<IconGitBranch size={12} color="#5c5f66" />}
+                styles={{
+                  input: { background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', color: '#909296', fontSize: 12, width: 180, height: 26, minHeight: 26 },
+                  dropdown: { background: '#1A1B1E', border: '1px solid rgba(255,255,255,0.1)' },
+                  option: { color: '#C1C2C5', fontSize: 12 },
+                }}
+              />
+            </>
+          )}
         </Box>
       </Box>
 
