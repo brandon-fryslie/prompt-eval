@@ -1,21 +1,24 @@
-name: Deploy to GitHub Pages
+name: Build & Deploy
 
 on:
   push:
-    branches: [master]
+  workflow_dispatch:
 
 permissions:
   contents: read
   pages: write
   id-token: write
+  actions: read
 
 concurrency:
-  group: pages
+  group: pages-deploy
   cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    outputs:
+      artifact_name: ${{ steps.meta.outputs.artifact_name }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -23,10 +26,23 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
-      - run: npm run build
-      - uses: actions/upload-pages-artifact@v3
+      - name: Build metadata
+        id: meta
+        run: |
+          if [ "$GITHUB_REF_NAME" = "master" ]; then
+            echo "base=/prompt-eval/" >> "$GITHUB_OUTPUT"
+            echo "artifact_name=site--master" >> "$GITHUB_OUTPUT"
+          else
+            SLUG=$(echo "$GITHUB_REF_NAME" | sed 's/[^a-zA-Z0-9-]/-/g')
+            echo "base=/prompt-eval/preview/${SLUG}/" >> "$GITHUB_OUTPUT"
+            echo "artifact_name=site--preview--${SLUG}" >> "$GITHUB_OUTPUT"
+          fi
+      - run: npx vite build --base "${{ steps.meta.outputs.base }}"
+      - uses: actions/upload-artifact@v4
         with:
+          name: ${{ steps.meta.outputs.artifact_name }}
           path: dist
+          retention-days: 90
 
   deploy:
     needs: build
@@ -35,5 +51,90 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: _current
+
+      - name: Assemble site
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          CURRENT_NAME: ${{ needs.build.outputs.artifact_name }}
+        run: |
+          set -euo pipefail
+          mkdir _site
+
+          download_artifact() {
+            local id="$1" dest="$2"
+            mkdir -p "$dest"
+            gh api "repos/${REPO}/actions/artifacts/${id}/zip" > /tmp/_dl.zip
+            unzip -qo /tmp/_dl.zip -d "$dest"
+            rm /tmp/_dl.zip
+          }
+
+          # 1. Place current build
+          if [ "$CURRENT_NAME" = "site--master" ]; then
+            cp -a _current/. _site/
+          else
+            SLUG="${CURRENT_NAME#site--preview--}"
+            mkdir -p "_site/preview/${SLUG}"
+            cp -a _current/. "_site/preview/${SLUG}/"
+          fi
+
+          # 2. Download master (if this isn't the master build)
+          if [ "$CURRENT_NAME" != "site--master" ]; then
+            MID=$(gh api "repos/${REPO}/actions/artifacts?name=site--master&per_page=1" \
+              --jq '[.artifacts[] | select(.expired == false)] | sort_by(.created_at) | last | .id // empty')
+            if [ -n "$MID" ]; then
+              echo "✓ master"
+              download_artifact "$MID" "_site"
+            else
+              echo "⚠ No master build found"
+            fi
+          fi
+
+          # 3. Download other preview artifacts (latest per branch)
+          gh api "repos/${REPO}/actions/artifacts" --paginate \
+            --jq '.artifacts[] | select(.name | startswith("site--preview--")) | select(.expired == false) | [.id, .name, .created_at] | @tsv' \
+            | sort -t$'\t' -k2,2 -k3,3r | sort -t$'\t' -k2,2 -u \
+            | while IFS=$'\t' read -r AID ANAME _; do
+                [ "$ANAME" = "$CURRENT_NAME" ] && continue
+                SLUG="${ANAME#site--preview--}"
+                echo "✓ preview/${SLUG}"
+                download_artifact "$AID" "_site/preview/${SLUG}"
+              done
+
+          # 4. Generate preview index
+          LINKS=""
+          if [ -d _site/preview ]; then
+            for d in _site/preview/*/; do
+              [ -d "$d" ] || continue
+              S=$(basename "$d")
+              LINKS="${LINKS}<li><a href=\"/prompt-eval/preview/${S}/\">${S}</a></li>"
+            done
+          fi
+          mkdir -p _site/preview
+          cat > _site/preview/index.html <<'IDXEOF'
+          <!DOCTYPE html>
+          <html><head><meta charset="utf-8"><title>Branch Previews</title>
+          <style>
+            body { font-family: system-ui; max-width: 600px; margin: 40px auto; padding: 0 20px; background: #1a1b1e; color: #c1c2c5 }
+            a { color: #9775fa } h1 { font-size: 1.4rem }
+          </style></head>
+          <body><h1>Branch Previews</h1>
+          <p><a href="/prompt-eval/">← Production</a></p>
+          IDXEOF
+          if [ -n "$LINKS" ]; then
+            echo "<ul>${LINKS}</ul>" >> _site/preview/index.html
+          else
+            echo "<p>No previews available.</p>" >> _site/preview/index.html
+          fi
+          echo "</body></html>" >> _site/preview/index.html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
       - uses: actions/deploy-pages@v4
         id: deployment
