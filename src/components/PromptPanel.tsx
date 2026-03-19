@@ -21,9 +21,9 @@ import {
   IconX,
   IconAlertTriangle,
 } from '@tabler/icons-react';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { MarkdownOutput } from './MarkdownOutput';
-import type { ModelGroup } from '../openai';
+import { formatCost, type ModelGroup } from '../openai';
 
 interface Props {
   label: string;
@@ -57,21 +57,11 @@ interface Props {
   autoCollapse: boolean;
   // Optional remove
   onRemove?: () => void;
+  autoFocusPrompt?: boolean;
 }
 
 function tok(text: string): number {
   return Math.ceil(text.length / 4);
-}
-
-function formatCost(cost: number, prefix = ''): string {
-  const s =
-    cost === 0      ? '$0.00' :
-    cost < 0.0001   ? `$${cost.toFixed(6)}` :
-    cost < 0.001    ? `$${cost.toFixed(5)}` :
-    cost < 0.01     ? `$${cost.toFixed(4)}` :
-    cost < 1        ? `$${cost.toFixed(3)}` :
-                      `$${cost.toFixed(2)}`;
-  return prefix + s;
 }
 
 function SectionHeader({
@@ -110,11 +100,12 @@ export function PromptPanel({
   preprocessResult, isPreprocessing,
   prompt, onPromptChange, hidePromptSection,
   response, isStreaming, inputTokens, outputTokens, cost, estimatedInputCost,
-  disabled, autoCollapse, onRemove,
+  disabled, autoCollapse, onRemove, autoFocusPrompt,
 }: Props) {
   const [copied, setCopied] = useState(false);
   const [preprocessOpen, setPreprocessOpen] = useState(true);
   const [promptOpen, setPromptOpen] = useState(true);
+  const promptRef = useRef<HTMLTextAreaElement>(null);
   const [outputOpen, setOutputOpen] = useState(true);
   const [generatedPromptOpen, setGeneratedPromptOpen] = useState(false);
   const [outputHovered, setOutputHovered] = useState(false);
@@ -133,6 +124,13 @@ export function PromptPanel({
   useEffect(() => {
     if (preprocessResult && !isPreprocessing) setGeneratedPromptOpen(true);
   }, [preprocessResult, isPreprocessing]);
+
+  useEffect(() => {
+    if (autoFocusPrompt) {
+      setPromptOpen(true);
+      setTimeout(() => promptRef.current?.focus(), 50);
+    }
+  }, [autoFocusPrompt]);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(response);
@@ -329,6 +327,7 @@ export function PromptPanel({
             <Collapse in={promptOpen}>
               <Box pb={12} pt={8}>
                 <Textarea
+                  ref={promptRef}
                   value={prompt}
                   onChange={(e) => onPromptChange(e.currentTarget.value)}
                   placeholder={`Enter ${label.toLowerCase()}…`}

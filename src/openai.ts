@@ -76,22 +76,39 @@ export function createClient(apiKey: string): OpenAI {
   return new OpenAI({ apiKey, dangerouslyAllowBrowser: true });
 }
 
+export interface ChatMessage {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+}
+
 export interface RunResult {
   text: string;
   inputTokens: number;
   outputTokens: number;
 }
 
+export function formatCost(cost: number, prefix = ''): string {
+  const s =
+    cost === 0      ? '$0.00' :
+    cost < 0.0001   ? `$${cost.toFixed(6)}` :
+    cost < 0.001    ? `$${cost.toFixed(5)}` :
+    cost < 0.01     ? `$${cost.toFixed(4)}` :
+    cost < 1        ? `$${cost.toFixed(3)}` :
+                      `$${cost.toFixed(2)}`;
+  return prefix + s;
+}
+
 export async function runPrompt(
   client: OpenAI,
   model: string,
-  prompt: string,
+  messages: ChatMessage[],
   onChunk: (delta: string) => void,
+  onFirstToken?: () => void,
 ): Promise<RunResult> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const stream = await (client.chat.completions.create as any)({
     model,
-    messages: [{ role: 'user', content: prompt }],
+    messages,
     stream: true,
     stream_options: { include_usage: true },
   });
@@ -99,11 +116,15 @@ export async function runPrompt(
   let text = '';
   let inputTokens = 0;
   let outputTokens = 0;
+  let firstTokenFired = false;
 
   for await (const chunk of stream) {
     const delta = chunk.choices[0]?.delta?.content ?? '';
     text += delta;
-    if (delta) onChunk(delta);
+    if (delta) {
+      if (!firstTokenFired) { firstTokenFired = true; onFirstToken?.(); }
+      onChunk(delta);
+    }
     if ((chunk as any).usage) {
       inputTokens = (chunk as any).usage.prompt_tokens ?? 0;
       outputTokens = (chunk as any).usage.completion_tokens ?? 0;

@@ -15,6 +15,8 @@ import {
   Alert,
   SegmentedControl,
   Textarea,
+  Table,
+  Loader,
 } from '@mantine/core';
 import {
   IconBolt,
@@ -31,6 +33,8 @@ import {
   IconEdit,
   IconMessageCircle,
   IconChevronRight,
+  IconSend,
+  IconRotate,
 } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
 import { useState, useCallback, useEffect } from 'react';
@@ -43,9 +47,11 @@ import {
   evaluateResponses,
   fetchModels,
   calcCost,
+  formatCost,
   type ModelGroup,
   type PricingMap,
   type RunResult,
+  type ChatMessage,
 } from './openai';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -67,12 +73,18 @@ interface ColumnRunState {
   isPreprocessing: boolean;
   inputTokens: number;
   outputTokens: number;
+  startTime: number | null;
+  firstTokenTime: number | null;
+  endTime: number | null;
+  sentPrompt: string | null;
 }
 
 const emptyRunState = (): ColumnRunState => ({
   response: '', preprocessResult: '',
   isStreaming: false, isPreprocessing: false,
   inputTokens: 0, outputTokens: 0,
+  startTime: null, firstTokenTime: null, endTime: null,
+  sentPrompt: null,
 });
 
 const COLUMN_COLORS = ['#7950f2', '#228be6', '#20c997', '#f59f00', '#fa5252', '#e64980'];
@@ -139,6 +151,10 @@ export default function App() {
   const [models, setModels] = useState<ModelGroup[]>([]);
   const [pricingMap, setPricingMap] = useState<PricingMap>({});
   const [modelsLoading, setModelsLoading] = useState(true);
+
+  const [conversationHistory, setConversationHistory] = useState<Record<string, ChatMessage[]>>({});
+  const [turnNumber, setTurnNumber] = useState(1);
+  const [evalDone, setEvalDone] = useState(false);
 
   useEffect(() => {
     fetchModels()
@@ -224,26 +240,39 @@ export default function App() {
   // ── Run logic ──────────────────────────────────────────────────────────────
 
   const runColumn = useCallback(
-    async (col: ColumnConfig, effectiveModel: string, effectivePromptText: string, client: ReturnType<typeof createClient>): Promise<[string, RunResult]> => {
+    async (col: ColumnConfig, effectiveModel: string, effectivePromptText: string, client: ReturnType<typeof createClient>, history: ChatMessage[]): Promise<[string, RunResult]> => {
       let promptToRun = effectivePromptText;
 
       if (col.preprocessEnabled && col.preprocessPrompt.trim()) {
         const combined = `${col.preprocessPrompt.trim()}\n\n${effectivePromptText}`;
         setField(col.id, 'isPreprocessing', true);
         try {
-          const result = await runPrompt(client, effectiveModel, combined, (d) => appendField(col.id, 'preprocessResult', d));
+          const result = await runPrompt(client, effectiveModel, [{ role: 'user', content: combined }], (d) => appendField(col.id, 'preprocessResult', d));
           promptToRun = result.text;
         } finally {
           setField(col.id, 'isPreprocessing', false);
         }
       }
 
-      setField(col.id, 'isStreaming', true);
+      const messages: ChatMessage[] = [...history, { role: 'user', content: promptToRun }];
+      const startTime = Date.now();
+      setRunStates((prev) => ({
+        ...prev,
+        [col.id]: { ...(prev[col.id] ?? emptyRunState()), isStreaming: true, startTime, sentPrompt: promptToRun },
+      }));
       try {
-        const result = await runPrompt(client, effectiveModel, promptToRun, (d) => appendField(col.id, 'response', d));
+        const result = await runPrompt(
+          client, effectiveModel, messages,
+          (d) => appendField(col.id, 'response', d),
+          () => setRunStates((prev) => ({
+            ...prev,
+            [col.id]: { ...(prev[col.id] ?? emptyRunState()), firstTokenTime: Date.now() },
+          })),
+        );
+        const endTime = Date.now();
         setRunStates((prev) => ({
           ...prev,
-          [col.id]: { ...(prev[col.id] ?? emptyRunState()), isStreaming: false, inputTokens: result.inputTokens, outputTokens: result.outputTokens },
+          [col.id]: { ...(prev[col.id] ?? emptyRunState()), isStreaming: false, inputTokens: result.inputTokens, outputTokens: result.outputTokens, endTime },
         }));
         return [promptToRun, result];
       } catch (err) {
@@ -274,7 +303,7 @@ export default function App() {
 
     setError(''); setIsRunning(true); setAutoCollapse(true);
     setRunStates({});
-    setEvalResponse('');
+    setEvalResponse(''); setEvalDone(false);
 
     const client = createClient(apiKey.trim());
 
@@ -288,7 +317,8 @@ export default function App() {
         active.map((col) => {
           const effectiveModel = mode === 'prompts' ? sharedModel : col.model;
           const effectivePromptText = mode === 'models' ? sharedPrompt : col.prompt;
-          return runColumn(col, effectiveModel, effectivePromptText, client);
+          const history = conversationHistory[col.id] ?? [];
+          return runColumn(col, effectiveModel, effectivePromptText, client, history);
         })
       );
 
@@ -304,7 +334,7 @@ export default function App() {
         if (entries.length >= 2) {
           setStreamingEval(true);
           await evaluateResponses(client, EVAL_MODEL, entries, (d) => setEvalResponse((p) => p + d))
-            .finally(() => setStreamingEval(false));
+            .finally(() => { setStreamingEval(false); setEvalDone(true); });
         }
       }
     } catch (err: unknown) {
@@ -314,13 +344,60 @@ export default function App() {
     } finally {
       setIsRunning(false); setAutoCollapse(false);
     }
-  }, [apiKey, mode, sharedPrompt, sharedModel, columns, evalEnabled, hasDuplicateModels, runColumn]);
+  }, [apiKey, mode, sharedPrompt, sharedModel, columns, evalEnabled, hasDuplicateModels, runColumn, conversationHistory]);
 
   const handleClear = () => {
     setRunStates({});
-    setEvalResponse('');
+    setEvalResponse(''); setEvalDone(false);
     setError('');
   };
+
+  const handleTriggerEval = useCallback(async () => {
+    if (!apiKey.trim()) return;
+    const entries = columns
+      .map((col, i) => {
+        const rs = runStates[col.id];
+        return rs?.response ? {
+          label: `Column ${COLUMN_LABELS[i] ?? i + 1}`,
+          prompt: rs.sentPrompt ?? (mode === 'models' ? sharedPrompt : col.prompt),
+          response: rs.response,
+        } : null;
+      })
+      .filter((e): e is NonNullable<typeof e> => !!e);
+
+    if (entries.length < 2) return;
+    const client = createClient(apiKey.trim());
+    setStreamingEval(true); setEvalResponse('');
+    await evaluateResponses(client, EVAL_MODEL, entries, (d) => setEvalResponse((p) => p + d))
+      .finally(() => { setStreamingEval(false); setEvalDone(true); });
+  }, [apiKey, columns, runStates, mode, sharedPrompt]);
+
+  const handleContinue = useCallback(() => {
+    // Push current turn into conversation history
+    setConversationHistory((prev) => {
+      const next = { ...prev };
+      columns.forEach((col) => {
+        const rs = runStates[col.id];
+        const prompt = rs?.sentPrompt;
+        const response = rs?.response;
+        if (prompt && response) {
+          next[col.id] = [...(next[col.id] ?? []), { role: 'user' as const, content: prompt }, { role: 'assistant' as const, content: response }];
+        }
+      });
+      return next;
+    });
+    // Clear prompts
+    if (mode === 'models') { setSharedPrompt(''); save(KEYS.sharedPrompt, ''); }
+    else { setColumns((prev) => { const next = prev.map((c) => ({ ...c, prompt: '' })); saveColumns(next); return next; }); }
+    // Clear run states and eval
+    setRunStates({}); setEvalResponse(''); setEvalDone(false); setError('');
+    setTurnNumber((n) => n + 1);
+  }, [columns, runStates, mode, save, saveColumns]);
+
+  const handleResetConversation = useCallback(() => {
+    setConversationHistory({}); setTurnNumber(1);
+    setRunStates({}); setEvalResponse(''); setEvalDone(false); setError('');
+  }, []);
 
   const hasAnyResponse = columns.some((c) => runStates[c.id]?.response);
 
@@ -602,8 +679,204 @@ export default function App() {
           })}
         </Box>
 
+        {/* ── COMPARISON TABLE ── */}
+        {hasAnyResponse && !isRunning && (() => {
+          const activeColumns = columns.filter((c) => runStates[c.id]?.response);
+          if (activeColumns.length === 0) return null;
+
+          const rows: Array<{ label: string; values: Array<{ text: string; raw: number | null }> }> = [];
+
+          // Model row
+          rows.push({
+            label: 'Model',
+            values: activeColumns.map((col) => {
+              const m = mode === 'prompts' ? sharedModel : col.model;
+              return { text: m, raw: null };
+            }),
+          });
+
+          // Input Tokens
+          rows.push({
+            label: 'Input Tokens',
+            values: activeColumns.map((col) => {
+              const rs = runStates[col.id];
+              return { text: rs?.inputTokens?.toLocaleString() ?? '—', raw: rs?.inputTokens ?? null };
+            }),
+          });
+
+          // Output Tokens
+          rows.push({
+            label: 'Output Tokens',
+            values: activeColumns.map((col) => {
+              const rs = runStates[col.id];
+              return { text: rs?.outputTokens?.toLocaleString() ?? '—', raw: rs?.outputTokens ?? null };
+            }),
+          });
+
+          // Cost
+          rows.push({
+            label: 'Cost',
+            values: activeColumns.map((col) => {
+              const rs = runStates[col.id];
+              const m = mode === 'prompts' ? sharedModel : col.model;
+              const c = rs ? calcCost(m, rs.inputTokens, rs.outputTokens, pricingMap) : null;
+              return { text: c != null ? formatCost(c) : '—', raw: c };
+            }),
+          });
+
+          // TTFT
+          rows.push({
+            label: 'TTFT',
+            values: activeColumns.map((col) => {
+              const rs = runStates[col.id];
+              const ttft = rs?.startTime && rs?.firstTokenTime ? (rs.firstTokenTime - rs.startTime) / 1000 : null;
+              return { text: ttft != null ? `${ttft.toFixed(2)}s` : '—', raw: ttft };
+            }),
+          });
+
+          // Total Time
+          rows.push({
+            label: 'Total Time',
+            values: activeColumns.map((col) => {
+              const rs = runStates[col.id];
+              const total = rs?.startTime && rs?.endTime ? (rs.endTime - rs.startTime) / 1000 : null;
+              return { text: total != null ? `${total.toFixed(2)}s` : '—', raw: total };
+            }),
+          });
+
+          // Find best (lowest non-null) per row for highlighting
+          const bestIndices = rows.map((row) => {
+            if (row.label === 'Model') return -1;
+            const nums = row.values.map((v) => v.raw).filter((n): n is number => n != null && n > 0);
+            if (nums.length < 2) return -1;
+            const min = Math.min(...nums);
+            return row.values.findIndex((v) => v.raw === min);
+          });
+
+          const responseCount = activeColumns.filter((c) => runStates[c.id]?.response).length;
+
+          return (
+            <Box mt={24}>
+              <Divider
+                label={
+                  <Box style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                    <IconLayoutColumns size={13} color="#2dd4bf" />
+                    <Text size="xs" fw={600} style={{ letterSpacing: '0.08em', textTransform: 'uppercase', color: '#2dd4bf' }}>
+                      Comparison
+                    </Text>
+                    {turnNumber > 1 && (
+                      <Badge size="xs" variant="light" color="teal" ml={4}>Turn {turnNumber}</Badge>
+                    )}
+                  </Box>
+                }
+                labelPosition="center"
+                style={{ borderColor: 'rgba(45,212,191,0.18)' }}
+                mb={14}
+              />
+              <Paper style={{ background: 'rgba(45,212,191,0.025)', border: '1px solid rgba(45,212,191,0.12)', borderRadius: 10, padding: '16px 20px', overflow: 'auto' }}>
+                <Table
+                  horizontalSpacing="md"
+                  verticalSpacing={8}
+                  styles={{
+                    table: { borderCollapse: 'separate', borderSpacing: 0 },
+                    th: { color: '#909296', fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: '1px solid rgba(255,255,255,0.06)', padding: '6px 12px' },
+                    td: { color: '#C1C2C5', fontSize: 13, borderBottom: '1px solid rgba(255,255,255,0.04)', padding: '6px 12px', fontVariantNumeric: 'tabular-nums' },
+                  }}
+                >
+                  <Table.Thead>
+                    <Table.Tr>
+                      <Table.Th style={{ width: 120 }} />
+                      {activeColumns.map((col, i) => (
+                        <Table.Th key={col.id}>
+                          <Box style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <Box style={{ width: 6, height: 6, borderRadius: '50%', background: COLUMN_COLORS[columns.indexOf(col) % COLUMN_COLORS.length] }} />
+                            {COLUMN_LABELS[columns.indexOf(col)] ?? i + 1}
+                          </Box>
+                        </Table.Th>
+                      ))}
+                    </Table.Tr>
+                  </Table.Thead>
+                  <Table.Tbody>
+                    {rows.map((row, ri) => (
+                      <Table.Tr key={row.label}>
+                        <Table.Td style={{ color: '#909296', fontSize: 12, fontWeight: 500 }}>{row.label}</Table.Td>
+                        {row.values.map((v, ci) => (
+                          <Table.Td key={ci} style={bestIndices[ri] === ci ? { color: '#2dd4bf', fontWeight: 600 } : undefined}>
+                            {v.text}
+                          </Table.Td>
+                        ))}
+                      </Table.Tr>
+                    ))}
+                    {/* LLM-as-Judge row */}
+                    <Table.Tr>
+                      <Table.Td style={{ color: '#909296', fontSize: 12, fontWeight: 500 }}>
+                        <Box style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                          <IconBrain size={12} color="#9775fa" />
+                          LLM-as-Judge
+                        </Box>
+                      </Table.Td>
+                      <Table.Td colSpan={activeColumns.length}>
+                        {streamingEval ? (
+                          <Box style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <Loader size={10} color="violet" />
+                            <Text size="xs" style={{ color: '#9775fa' }}>Analyzing…</Text>
+                          </Box>
+                        ) : evalDone ? (
+                          <Badge size="sm" variant="light" color="violet" leftSection={<IconBrain size={10} />}>
+                            Complete
+                          </Badge>
+                        ) : responseCount >= 2 ? (
+                          <Button
+                            variant="subtle"
+                            color="violet"
+                            size="xs"
+                            leftSection={<IconBrain size={12} />}
+                            onClick={handleTriggerEval}
+                            style={{ height: 24, padding: '0 10px' }}
+                          >
+                            Generate
+                          </Button>
+                        ) : (
+                          <Text size="xs" c="dimmed">Need 2+ responses</Text>
+                        )}
+                      </Table.Td>
+                    </Table.Tr>
+                  </Table.Tbody>
+                </Table>
+
+                {/* Continue / Reset buttons */}
+                <Box style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 16, paddingTop: 12, borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                  <Button
+                    variant="light"
+                    color="teal"
+                    size="xs"
+                    leftSection={<IconSend size={13} />}
+                    onClick={handleContinue}
+                  >
+                    Continue Conversation
+                  </Button>
+                  {turnNumber > 1 && (
+                    <Button
+                      variant="subtle"
+                      color="gray"
+                      size="xs"
+                      leftSection={<IconRotate size={13} />}
+                      onClick={handleResetConversation}
+                    >
+                      Reset Conversation
+                    </Button>
+                  )}
+                  {turnNumber > 1 && (
+                    <Badge size="sm" variant="light" color="teal">Turn {turnNumber}</Badge>
+                  )}
+                </Box>
+              </Paper>
+            </Box>
+          );
+        })()}
+
         {/* ── AI EVALUATION ── */}
-        <Collapse in={evalEnabled && (!!evalResponse || streamingEval)}>
+        <Collapse in={!!evalResponse || streamingEval}>
           <Box mt={24}>
             <Divider
               label={
