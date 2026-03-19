@@ -37,7 +37,7 @@ import {
   IconRotate,
 } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { GeometricCanvas } from './components/GeometricCanvas';
 import { PromptPanel } from './components/PromptPanel';
 import { MarkdownOutput } from './components/MarkdownOutput';
@@ -155,6 +155,8 @@ export default function App() {
   const [conversationHistory, setConversationHistory] = useState<Record<string, ChatMessage[]>>({});
   const [turnNumber, setTurnNumber] = useState(1);
   const [evalDone, setEvalDone] = useState(false);
+
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   useEffect(() => {
     fetchModels()
@@ -405,6 +407,25 @@ export default function App() {
     mode === 'models' ? !!sharedPrompt.trim() : columns.some((c) => c.prompt.trim())
   );
 
+  // ── Cmd+Enter to run ────────────────────────────────────────────────────────
+  const handleRunRef = useRef(handleRun);
+  handleRunRef.current = handleRun;
+  const canRunRef = useRef(canRun);
+  canRunRef.current = canRun;
+  const isRunningRef = useRef(isRunning);
+  isRunningRef.current = isRunning;
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && canRunRef.current && !isRunningRef.current) {
+        e.preventDefault();
+        handleRunRef.current();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
   // Pre-run input cost estimate per column
   const getEstimatedInputCost = (col: ColumnConfig): number | null => {
     const promptText = mode === 'models' ? sharedPrompt : col.prompt;
@@ -627,6 +648,60 @@ export default function App() {
                     input: { background: 'rgba(121,80,242,0.05)', border: '1px solid rgba(121,80,242,0.18)', color: '#C1C2C5', fontSize: '13px', lineHeight: '1.65' },
                   }}
                 />
+              </Box>
+            </Collapse>
+          </Paper>
+        )}
+
+        {/* ── CONVERSATION HISTORY ── */}
+        {turnNumber > 1 && Object.keys(conversationHistory).length > 0 && (
+          <Paper style={{ background: 'rgba(45,212,191,0.02)', border: '1px solid rgba(45,212,191,0.12)', borderRadius: 10, marginBottom: 18, overflow: 'hidden' }}>
+            <Box
+              onClick={() => setHistoryOpen((v) => !v)}
+              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 14px', cursor: 'pointer', userSelect: 'none' }}
+            >
+              <Box style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                <IconChevronRight size={11} style={{ transform: historyOpen ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.18s', color: '#2dd4bf' }} />
+                <IconMessageCircle size={12} color="#2dd4bf" />
+                <Text size="xs" fw={600} style={{ letterSpacing: '0.06em', textTransform: 'uppercase', color: '#2dd4bf' }}>
+                  Conversation History
+                </Text>
+                <Badge size="xs" variant="light" color="teal">{turnNumber - 1} {turnNumber === 2 ? 'turn' : 'turns'}</Badge>
+              </Box>
+              <Text size="xs" c="dimmed">
+                {columns.filter((c) => (conversationHistory[c.id]?.length ?? 0) > 0).length} columns
+              </Text>
+            </Box>
+            <Collapse in={historyOpen}>
+              <Box style={{ padding: '0 14px 12px', display: 'grid', gridTemplateColumns: `repeat(${columns.length}, minmax(200px, 1fr))`, gap: 10 }}>
+                {columns.map((col, i) => {
+                  const history = conversationHistory[col.id] ?? [];
+                  if (history.length === 0) return <Box key={col.id} />;
+                  // Group into turns (pairs of user+assistant)
+                  const turns: Array<{ user: string; assistant: string }> = [];
+                  for (let j = 0; j < history.length; j += 2) {
+                    turns.push({ user: history[j]?.content ?? '', assistant: history[j + 1]?.content ?? '' });
+                  }
+                  return (
+                    <Box key={col.id}>
+                      <Box style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 6 }}>
+                        <Box style={{ width: 5, height: 5, borderRadius: '50%', background: COLUMN_COLORS[i % COLUMN_COLORS.length] }} />
+                        <Text size="xs" fw={600} c="dimmed">{COLUMN_LABELS[i]}</Text>
+                      </Box>
+                      {turns.map((turn, ti) => (
+                        <Box key={ti} style={{ marginBottom: 6 }}>
+                          <Text size="xs" style={{ color: '#6b7280', lineHeight: 1.4 }}>
+                            <Text component="span" size="xs" fw={600} style={{ color: '#7950f2' }}>T{ti + 1} </Text>
+                            {turn.user.length > 80 ? turn.user.slice(0, 80) + '…' : turn.user}
+                          </Text>
+                          <Text size="xs" style={{ color: '#4b5563', lineHeight: 1.4, paddingLeft: 4, borderLeft: `2px solid rgba(${i === 0 ? '121,80,242' : i === 1 ? '34,139,230' : '32,201,151'},0.2)` }}>
+                            {turn.assistant.length > 120 ? turn.assistant.slice(0, 120) + '…' : turn.assistant}
+                          </Text>
+                        </Box>
+                      ))}
+                    </Box>
+                  );
+                })}
               </Box>
             </Collapse>
           </Paper>
