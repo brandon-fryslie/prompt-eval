@@ -42,6 +42,8 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { GeometricCanvas } from './components/GeometricCanvas';
 import { PromptPanel } from './components/PromptPanel';
 import { MarkdownOutput } from './components/MarkdownOutput';
+import { NetworkLog } from './components/NetworkLog';
+import './networkLog'; // [LAW:single-enforcer] activate fetch interceptor once at app root
 import {
   createClient,
   runPrompt,
@@ -1061,6 +1063,9 @@ export default function App() {
             </Paper>
           </Box>
         </Collapse>
+
+        {/* ── NETWORK LOG ── */}
+        <NetworkLog />
 
         {/* Footer */}
         <Box style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 16, marginTop: 52, paddingTop: 20, borderTop: '1px solid rgba(255,255,255,0.05)' }}>
