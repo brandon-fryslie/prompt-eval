@@ -35,6 +35,11 @@ interface Props {
   modelsLoading: boolean;
   hideModelSelector?: boolean;
   isDuplicateModel?: boolean;
+  // Provider
+  provider: string;
+  onProviderChange: (provider: string) => void;
+  providers: Array<{ value: string; label: string }>;
+  hideProviderSelector?: boolean;
   // Preprocessing
   preprocessEnabled: boolean;
   onPreprocessEnabledChange: (v: boolean) => void;
@@ -95,6 +100,7 @@ function SectionHeader({
 export function PromptPanel({
   label, color,
   model, onModelChange, models, modelsLoading, hideModelSelector, isDuplicateModel,
+  provider, onProviderChange, providers, hideProviderSelector,
   preprocessEnabled, onPreprocessEnabledChange,
   preprocessPrompt, onPreprocessPromptChange,
   preprocessResult, isPreprocessing,
@@ -164,13 +170,35 @@ export function PromptPanel({
           {label}
         </Text>
 
+        {/* Provider selector (compare-models mode) */}
+        {!hideProviderSelector && providers.length > 0 && (
+          <Box style={{ width: 130, flexShrink: 0 }}>
+            <Select
+              value={provider}
+              onChange={(v) => v && onProviderChange(v)}
+              data={providers}
+              size="xs"
+              disabled={disabled}
+              styles={{
+                input: {
+                  background: 'rgba(255,255,255,0.04)',
+                  border: `1px solid rgba(${borderRgb},0.2)`,
+                  color: '#C1C2C5', fontSize: 12, height: 26, minHeight: 26, paddingTop: 0, paddingBottom: 0,
+                },
+                dropdown: { background: '#1A1B1E', border: '1px solid rgba(255,255,255,0.1)' },
+                option: { color: '#C1C2C5', fontSize: 12 },
+              }}
+            />
+          </Box>
+        )}
+
         {/* Model selector (compare-models mode) */}
         {!hideModelSelector && (
           <Box style={{ flex: 1, minWidth: 0 }}>
             <Select
               value={model}
               onChange={(v) => v && onModelChange(v)}
-              data={models}
+              data={models.map((g) => ({ ...g, items: g.items.filter((m) => m.provider === provider) })).filter((g) => g.items.length > 0)}
               placeholder={modelsLoading ? 'Loading…' : 'Model'}
               searchable
               size="xs"

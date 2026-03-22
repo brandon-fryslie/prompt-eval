@@ -2,9 +2,16 @@ import OpenAI from 'openai';
 
 const MODELS_URL = 'https://brandon-fryslie.github.io/ai-providers-and-models/models.json';
 
+export interface Provider {
+  id: string;
+  name: string;
+  baseUrl: string;
+}
+
 export interface ModelItem {
   value: string;
   label: string;
+  provider: string;
 }
 
 export interface ModelGroup {
@@ -22,42 +29,58 @@ export type PricingMap = Record<string, ModelPricing>;
 export interface ModelsData {
   groups: ModelGroup[];
   pricingMap: PricingMap;
+  providers: Record<string, Provider>;
 }
+
+const OPENAI_API_SPEC = 'api.openai.com/v1';
 
 export async function fetchModels(): Promise<ModelsData> {
   const resp = await fetch(MODELS_URL);
   const data = await resp.json();
 
   const pricingMap: PricingMap = {};
-  const buckets: Record<string, ModelItem[]> = {
-    'General Availability': [],
-    'Preview': [],
-    'Legacy': [],
-  };
+  const providers: Record<string, Provider> = {};
+  // keyed by "providerId::bucketName"
+  const buckets: Record<string, ModelItem[]> = {};
 
-  const openai = data?.providers?.openai;
-  if (!openai?.models) return { groups: [], pricingMap };
+  const rawProviders = data?.providers ?? {};
+  for (const [providerId, providerData] of Object.entries(rawProviders as Record<string, any>)) {
+    if (providerData.api_specification !== OPENAI_API_SPEC) continue;
 
-  for (const [id, model] of Object.entries(openai.models as Record<string, any>)) {
-    if (model.status === 'deprecated') continue;
-    if (model.pricing) pricingMap[id] = model.pricing;
+    const providerName: string = providerData.name ?? providerId;
+    const baseUrl: string = providerData.base_url ?? '';
+    providers[providerId] = { id: providerId, name: providerName, baseUrl };
 
-    const bucket =
-      model.status === 'legacy' ? 'Legacy' :
-      model.status === 'preview' ? 'Preview' :
-      'General Availability';
+    const models = providerData.models as Record<string, any> | undefined;
+    if (!models) continue;
 
-    buckets[bucket].push({ value: id, label: model.name ?? id });
+    for (const [modelId, model] of Object.entries(models)) {
+      if (model.status === 'deprecated') continue;
+      if (model.pricing) pricingMap[modelId] = model.pricing;
+
+      const statusBucket =
+        model.status === 'legacy' ? 'Legacy' :
+        model.status === 'preview' ? 'Preview' :
+        'General Availability';
+
+      const groupKey = `${providerId}::${statusBucket}`;
+      const items = buckets[groupKey] ?? (buckets[groupKey] = []);
+      items.push({ value: modelId, label: model.name ?? modelId, provider: providerId });
+    }
   }
 
   const groups: ModelGroup[] = Object.entries(buckets)
     .filter(([, items]) => items.length > 0)
-    .map(([group, items]) => ({
-      group,
-      items: items.sort((a, b) => a.label.localeCompare(b.label)),
-    }));
+    .map(([key, items]) => {
+      const [providerId, statusBucket] = key.split('::');
+      const providerName = providers[providerId]?.name ?? providerId;
+      return {
+        group: `${providerName} — ${statusBucket}`,
+        items: items.sort((a, b) => a.label.localeCompare(b.label)),
+      };
+    });
 
-  return { groups, pricingMap };
+  return { groups, pricingMap, providers };
 }
 
 export function calcCost(
@@ -72,8 +95,8 @@ export function calcCost(
        + (outputTokens / 1_000_000) * pricing.output_per_million;
 }
 
-export function createClient(apiKey: string): OpenAI {
-  return new OpenAI({ apiKey, dangerouslyAllowBrowser: true });
+export function createClient({ apiKey, baseUrl }: { apiKey: string; baseUrl?: string }): OpenAI {
+  return new OpenAI({ apiKey, baseURL: baseUrl, dangerouslyAllowBrowser: true });
 }
 
 export interface ChatMessage {

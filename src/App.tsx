@@ -53,6 +53,7 @@ import {
   type PricingMap,
   type RunResult,
   type ChatMessage,
+  type Provider,
 } from './openai';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -62,6 +63,7 @@ type Mode = 'models' | 'prompts';
 interface ColumnConfig {
   id: string;
   model: string;
+  provider: string;
   prompt: string;
   preprocessEnabled: boolean;
   preprocessPrompt: string;
@@ -99,26 +101,28 @@ function currentBranch(): string {
 const COLUMN_COLORS = ['#7950f2', '#228be6', '#20c997', '#f59f00', '#fa5252', '#e64980'];
 const COLUMN_LABELS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
 const DEFAULT_MODEL = 'gpt-4.1';
+const DEFAULT_PROVIDER = 'openai';
 const EVAL_MODEL = 'gpt-4.1';
 const MODEL_CANDIDATES = ['gpt-4.1', 'gpt-4.1-mini', 'gpt-4.1-nano', 'o4-mini', 'o3', 'gpt-4o'];
 
-function makeColumn(model = DEFAULT_MODEL): ColumnConfig {
+function makeColumn(model = DEFAULT_MODEL, provider = DEFAULT_PROVIDER): ColumnConfig {
   return {
     id: `col-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-    model, prompt: '', preprocessEnabled: false, preprocessPrompt: '',
+    model, provider, prompt: '', preprocessEnabled: false, preprocessPrompt: '',
   };
 }
 
 // ── Persistence ───────────────────────────────────────────────────────────────
 
 const KEYS = {
-  persist:       'pe-persist',
-  apiKey:        'pe-api-key',
-  columns:       'pe-columns-v2',
-  eval:          'pe-eval-enabled',
-  mode:          'pe-mode',
-  sharedPrompt:  'pe-shared-prompt',
-  sharedModel:   'pe-shared-model',
+  persist:         'pe-persist',
+  apiKeys:         'pe-api-keys',
+  columns:         'pe-columns-v2',
+  eval:            'pe-eval-enabled',
+  mode:            'pe-mode',
+  sharedPrompt:    'pe-shared-prompt',
+  sharedModel:     'pe-shared-model',
+  sharedProvider:  'pe-shared-provider',
 } as const;
 
 const persistedOnLoad = sessionStorage.getItem(KEYS.persist) === 'true';
@@ -130,7 +134,11 @@ const defaultColumns: ColumnConfig[] = [makeColumn('gpt-4.1'), makeColumn('gpt-4
 function loadColumns(): ColumnConfig[] {
   try {
     const raw = ss(KEYS.columns, '');
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const parsed = JSON.parse(raw) as ColumnConfig[];
+      // Backfill provider for columns saved before multi-provider support
+      return parsed.map((c) => ({ ...c, provider: c.provider ?? DEFAULT_PROVIDER }));
+    }
   } catch { /* ignore */ }
   return defaultColumns;
 }
@@ -139,13 +147,16 @@ function loadColumns(): ColumnConfig[] {
 
 export default function App() {
   const [persist, setPersist] = useState(persistedOnLoad);
-  const [apiKey, setApiKey] = useState(() => ss(KEYS.apiKey, ''));
-  const [showKey, setShowKey] = useState(false);
+  const [apiKeys, setApiKeys] = useState<Record<string, string>>(() => {
+    try { const raw = ss(KEYS.apiKeys, ''); return raw ? JSON.parse(raw) : {}; } catch { return {}; }
+  });
+  const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
   const [evalEnabled, setEvalEnabled] = useState(() => ss(KEYS.eval, 'false') === 'true');
 
   const [mode, setMode] = useState<Mode>(() => ss(KEYS.mode, 'prompts') as Mode);
   const [sharedPrompt, setSharedPrompt] = useState(() => ss(KEYS.sharedPrompt, ''));
   const [sharedModel, setSharedModel] = useState(() => ss(KEYS.sharedModel, DEFAULT_MODEL));
+  const [sharedProvider, setSharedProvider] = useState(() => ss(KEYS.sharedProvider, DEFAULT_PROVIDER));
   const [sharedPromptOpen, setSharedPromptOpen] = useState(true);
 
   const [columns, setColumns] = useState<ColumnConfig[]>(loadColumns);
@@ -160,6 +171,7 @@ export default function App() {
   const [models, setModels] = useState<ModelGroup[]>([]);
   const [pricingMap, setPricingMap] = useState<PricingMap>({});
   const [modelsLoading, setModelsLoading] = useState(true);
+  const [providers, setProviders] = useState<Record<string, Provider>>({});
 
   const [conversationHistory, setConversationHistory] = useState<Record<string, ChatMessage[]>>({});
   const [turnNumber, setTurnNumber] = useState(1);
@@ -171,7 +183,7 @@ export default function App() {
 
   useEffect(() => {
     fetchModels()
-      .then(({ groups, pricingMap }) => { setModels(groups); setPricingMap(pricingMap); })
+      .then(({ groups, pricingMap, providers: p }) => { setModels(groups); setPricingMap(pricingMap); setProviders(p); })
       .catch(() => {})
       .finally(() => setModelsLoading(false));
 
@@ -195,12 +207,13 @@ export default function App() {
     setPersist(on);
     sessionStorage.setItem(KEYS.persist, String(on));
     if (on) {
-      sessionStorage.setItem(KEYS.apiKey,       apiKey);
-      sessionStorage.setItem(KEYS.columns,      JSON.stringify(columns));
-      sessionStorage.setItem(KEYS.eval,         String(evalEnabled));
-      sessionStorage.setItem(KEYS.mode,         mode);
-      sessionStorage.setItem(KEYS.sharedPrompt, sharedPrompt);
-      sessionStorage.setItem(KEYS.sharedModel,  sharedModel);
+      sessionStorage.setItem(KEYS.apiKeys,        JSON.stringify(apiKeys));
+      sessionStorage.setItem(KEYS.columns,        JSON.stringify(columns));
+      sessionStorage.setItem(KEYS.eval,           String(evalEnabled));
+      sessionStorage.setItem(KEYS.mode,           mode);
+      sessionStorage.setItem(KEYS.sharedPrompt,   sharedPrompt);
+      sessionStorage.setItem(KEYS.sharedModel,    sharedModel);
+      sessionStorage.setItem(KEYS.sharedProvider,  sharedProvider);
     } else {
       Object.values(KEYS).forEach((k) => k !== KEYS.persist && sessionStorage.removeItem(k));
     }
@@ -234,7 +247,8 @@ export default function App() {
   // ── Duplicate model detection ──────────────────────────────────────────────
 
   const modelCounts = columns.reduce<Record<string, number>>((acc, c) => {
-    acc[c.model] = (acc[c.model] ?? 0) + 1;
+    const key = `${c.provider}::${c.model}`;
+    acc[key] = (acc[key] ?? 0) + 1;
     return acc;
   }, {});
   const hasDuplicateModels = mode === 'models' && Object.values(modelCounts).some((n) => n > 1);
@@ -301,9 +315,24 @@ export default function App() {
     [appendField, setField],
   );
 
+  const getProviderForColumn = useCallback((col: ColumnConfig): string => {
+    return mode === 'prompts' ? sharedProvider : col.provider;
+  }, [mode, sharedProvider]);
+
   const handleRun = useCallback(async () => {
-    if (!apiKey.trim()) {
-      notifications.show({ title: 'API Key Required', message: 'Please enter your OpenAI API key', color: 'red', icon: <IconAlertCircle size={16} /> });
+    const active = columns.filter((c) => {
+      if (mode === 'models') return true;
+      return c.prompt.trim();
+    });
+
+    // Validate API keys for all providers that will be used
+    const neededProviders = new Set(active.map((col) => getProviderForColumn(col)));
+    // Also need openai key for eval if enabled
+    if (evalEnabled) neededProviders.add(DEFAULT_PROVIDER);
+    const missingProviders = [...neededProviders].filter((p) => !apiKeys[p]?.trim());
+    if (missingProviders.length > 0) {
+      const names = missingProviders.map((p) => providers[p]?.name ?? p).join(', ');
+      notifications.show({ title: 'API Key Required', message: `Missing API key for: ${names}`, color: 'red', icon: <IconAlertCircle size={16} /> });
       return;
     }
     if (mode === 'models' && !sharedPrompt.trim()) {
@@ -323,19 +352,14 @@ export default function App() {
     setRunStates({});
     setEvalResponse(''); setEvalDone(false);
 
-    const client = createClient(apiKey.trim());
-
-    const active = columns.filter((c) => {
-      if (mode === 'models') return true; // shared prompt — all columns run
-      return c.prompt.trim();
-    });
-
     try {
       const results = await Promise.all(
         active.map((col) => {
+          const effectiveProvider = getProviderForColumn(col);
           const effectiveModel = mode === 'prompts' ? sharedModel : col.model;
           const effectivePromptText = mode === 'models' ? sharedPrompt : col.prompt;
           const history = conversationHistory[col.id] ?? [];
+          const client = createClient({ apiKey: apiKeys[effectiveProvider]!.trim(), baseUrl: providers[effectiveProvider]?.baseUrl });
           return runColumn(col, effectiveModel, effectivePromptText, client, history);
         })
       );
@@ -350,8 +374,9 @@ export default function App() {
           .filter((e) => e.response);
 
         if (entries.length >= 2) {
+          const evalClient = createClient({ apiKey: apiKeys[DEFAULT_PROVIDER]!.trim(), baseUrl: providers[DEFAULT_PROVIDER]?.baseUrl });
           setStreamingEval(true);
-          await evaluateResponses(client, EVAL_MODEL, entries, (d) => setEvalResponse((p) => p + d))
+          await evaluateResponses(evalClient, EVAL_MODEL, entries, (d) => setEvalResponse((p) => p + d))
             .finally(() => { setStreamingEval(false); setEvalDone(true); });
         }
       }
@@ -362,7 +387,7 @@ export default function App() {
     } finally {
       setIsRunning(false); setAutoCollapse(false);
     }
-  }, [apiKey, mode, sharedPrompt, sharedModel, columns, evalEnabled, hasDuplicateModels, runColumn, conversationHistory]);
+  }, [apiKeys, providers, mode, sharedPrompt, sharedModel, sharedProvider, columns, evalEnabled, hasDuplicateModels, runColumn, conversationHistory, getProviderForColumn]);
 
   const handleClear = () => {
     setRunStates({});
@@ -371,7 +396,7 @@ export default function App() {
   };
 
   const handleTriggerEval = useCallback(async () => {
-    if (!apiKey.trim()) return;
+    if (!apiKeys[DEFAULT_PROVIDER]?.trim()) return;
     const entries = columns
       .map((col, i) => {
         const rs = runStates[col.id];
@@ -384,11 +409,11 @@ export default function App() {
       .filter((e): e is NonNullable<typeof e> => !!e);
 
     if (entries.length < 2) return;
-    const client = createClient(apiKey.trim());
+    const evalClient = createClient({ apiKey: apiKeys[DEFAULT_PROVIDER]!.trim(), baseUrl: providers[DEFAULT_PROVIDER]?.baseUrl });
     setStreamingEval(true); setEvalResponse('');
-    await evaluateResponses(client, EVAL_MODEL, entries, (d) => setEvalResponse((p) => p + d))
+    await evaluateResponses(evalClient, EVAL_MODEL, entries, (d) => setEvalResponse((p) => p + d))
       .finally(() => { setStreamingEval(false); setEvalDone(true); });
-  }, [apiKey, columns, runStates, mode, sharedPrompt]);
+  }, [apiKeys, providers, columns, runStates, mode, sharedPrompt]);
 
   const handleContinue = useCallback(() => {
     // Push current turn into conversation history
@@ -419,7 +444,13 @@ export default function App() {
 
   const hasAnyResponse = columns.some((c) => runStates[c.id]?.response);
 
-  const canRun = !!apiKey.trim() && !hasDuplicateModels && (
+  const hasRequiredKeys = (() => {
+    const active = columns.filter((c) => mode === 'models' ? true : c.prompt.trim());
+    const needed = new Set(active.map((col) => getProviderForColumn(col)));
+    return [...needed].every((p) => !!apiKeys[p]?.trim());
+  })();
+
+  const canRun = hasRequiredKeys && !hasDuplicateModels && (
     mode === 'models' ? !!sharedPrompt.trim() : columns.some((c) => c.prompt.trim())
   );
 
@@ -475,24 +506,34 @@ export default function App() {
 
             <Box style={{ width: 1, height: 24, background: 'rgba(255,255,255,0.08)', flexShrink: 0 }} />
 
-            <Box style={{ flex: 1, minWidth: 240 }}>
-              <TextInput
-                placeholder="OpenAI API key  sk-…"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.currentTarget.value)}
-                onBlur={(e) => save(KEYS.apiKey, e.currentTarget.value)}
-                type={showKey ? 'text' : 'password'}
-                size="sm"
-                leftSection={<IconKey size={14} color="#5c5f66" />}
-                rightSection={
-                  <Tooltip label={showKey ? 'Hide key' : 'Show key'} position="top">
-                    <ActionIcon size="sm" variant="subtle" color="gray" onClick={() => setShowKey((v) => !v)}>
-                      {showKey ? <IconEyeOff size={14} /> : <IconEye size={14} />}
-                    </ActionIcon>
-                  </Tooltip>
-                }
-                styles={{ input: { background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', color: '#C1C2C5' } }}
-              />
+            <Box style={{ flex: 1, minWidth: 240, display: 'flex', gap: 8, alignItems: 'center' }}>
+              {Object.values(providers).map((prov) => (
+                <Box key={prov.id} style={{ flex: 1, minWidth: 160 }}>
+                  <TextInput
+                    placeholder={`${prov.name} API key`}
+                    value={apiKeys[prov.id] ?? ''}
+                    onChange={(e) => {
+                      const val = e.currentTarget.value;
+                      setApiKeys((prev) => {
+                        const next = { ...prev, [prov.id]: val };
+                        save(KEYS.apiKeys, JSON.stringify(next));
+                        return next;
+                      });
+                    }}
+                    type={showKeys[prov.id] ? 'text' : 'password'}
+                    size="sm"
+                    leftSection={<IconKey size={14} color="#5c5f66" />}
+                    rightSection={
+                      <Tooltip label={showKeys[prov.id] ? 'Hide key' : 'Show key'} position="top">
+                        <ActionIcon size="sm" variant="subtle" color="gray" onClick={() => setShowKeys((prev) => ({ ...prev, [prov.id]: !prev[prov.id] }))}>
+                          {showKeys[prov.id] ? <IconEyeOff size={14} /> : <IconEye size={14} />}
+                        </ActionIcon>
+                      </Tooltip>
+                    }
+                    styles={{ input: { background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', color: '#C1C2C5' } }}
+                  />
+                </Box>
+              ))}
             </Box>
 
             <Group gap={8} style={{ marginLeft: 'auto', flexShrink: 0 }}>
@@ -554,15 +595,35 @@ export default function App() {
 
             <Box style={{ width: 1, height: 20, background: 'rgba(255,255,255,0.08)', flexShrink: 0 }} />
 
-            {/* Global model selector (compare-prompts mode) */}
+            {/* Global provider + model selector (compare-prompts mode) */}
             {mode === 'prompts' && (
               <>
+                <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>Provider</Text>
+                <Box style={{ width: 150 }}>
+                  <Select
+                    value={sharedProvider}
+                    onChange={(v) => {
+                      if (!v) return;
+                      setSharedProvider(v); save(KEYS.sharedProvider, v);
+                      // Reset model to first available for this provider
+                      const providerModels = models.flatMap((g) => g.items).filter((m) => m.provider === v);
+                      if (providerModels.length > 0) { setSharedModel(providerModels[0].value); save(KEYS.sharedModel, providerModels[0].value); }
+                    }}
+                    data={Object.values(providers).map((p) => ({ value: p.id, label: p.name }))}
+                    size="xs"
+                    styles={{
+                      input: { background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', color: '#C1C2C5', fontSize: 13 },
+                      dropdown: { background: '#1A1B1E', border: '1px solid rgba(255,255,255,0.1)' },
+                      option: { color: '#C1C2C5', fontSize: 13 },
+                    }}
+                  />
+                </Box>
                 <Text size="xs" c="dimmed" style={{ whiteSpace: 'nowrap' }}>Model</Text>
-                <Box style={{ width: 185 }}>
+                <Box style={{ width: 220 }}>
                   <Select
                     value={sharedModel}
                     onChange={(v) => { if (v) { setSharedModel(v); save(KEYS.sharedModel, v); } }}
-                    data={models}
+                    data={models.map((g) => ({ ...g, items: g.items.filter((m) => m.provider === sharedProvider) })).filter((g) => g.items.length > 0)}
                     placeholder={modelsLoading ? 'Loading…' : 'Select model'}
                     searchable
                     size="xs"
@@ -734,7 +795,7 @@ export default function App() {
             const estimatedInputCost = !rs.response && !rs.isStreaming
               ? getEstimatedInputCost(col)
               : null;
-            const isDup = mode === 'models' && (modelCounts[col.model] ?? 0) > 1;
+            const isDup = mode === 'models' && (modelCounts[`${col.provider}::${col.model}`] ?? 0) > 1;
 
             return (
               <PromptPanel
@@ -747,6 +808,14 @@ export default function App() {
                 modelsLoading={modelsLoading}
                 hideModelSelector={mode === 'prompts'}
                 isDuplicateModel={isDup}
+                provider={col.provider}
+                onProviderChange={(p) => {
+                  const providerModels = models.flatMap((g) => g.items).filter((m) => m.provider === p);
+                  const firstModel = providerModels[0]?.value ?? DEFAULT_MODEL;
+                  updateColumn(col.id, { provider: p, model: firstModel });
+                }}
+                providers={Object.values(providers).map((p) => ({ value: p.id, label: p.name }))}
+                hideProviderSelector={mode === 'prompts'}
                 preprocessEnabled={col.preprocessEnabled}
                 onPreprocessEnabledChange={(v) => updateColumn(col.id, { preprocessEnabled: v })}
                 preprocessPrompt={col.preprocessPrompt}
@@ -998,7 +1067,7 @@ export default function App() {
           <Text size="xs" c="dimmed">
             {persist
               ? 'Fields saved in session storage — cleared when this tab closes'
-              : 'API key never stored — all calls go directly to OpenAI from your browser'}
+              : 'API keys never stored — all calls go directly to providers from your browser'}
           </Text>
           {branches.length > 1 && (
             <>
