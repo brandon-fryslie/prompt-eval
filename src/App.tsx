@@ -37,6 +37,7 @@ import {
   IconRotate,
   IconGitBranch,
   IconBrandGithub,
+  IconShieldCheck,
 } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -1108,6 +1109,28 @@ export default function App() {
           >
             <IconBrandGithub size={14} />
             Fork This
+          </a>
+          <a
+            href="https://github.com/brandon-fryslie/prompt-eval"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: '#909296', textDecoration: 'none', fontSize: 12, padding: '4px 10px', borderRadius: 4, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.04)', transition: 'border-color 0.2s, color 0.2s' }}
+            onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.2)'; e.currentTarget.style.color = '#C1C2C5'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; e.currentTarget.style.color = '#909296'; }}
+          >
+            <IconBrandGithub size={14} />
+            View Source
+          </a>
+          <a
+            href="https://github.com/brandon-fryslie/prompt-eval/blob/master/SECURITY.md"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: '#909296', textDecoration: 'none', fontSize: 12, padding: '4px 10px', borderRadius: 4, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.04)', transition: 'border-color 0.2s, color 0.2s' }}
+            onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.2)'; e.currentTarget.style.color = '#C1C2C5'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; e.currentTarget.style.color = '#909296'; }}
+          >
+            <IconShieldCheck size={14} />
+            Security
           </a>
         </Box>
       </Box>
