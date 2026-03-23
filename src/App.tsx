@@ -43,6 +43,7 @@ import {
   IconCamera,
   IconClipboardCheck,
   IconChartBarOff,
+  IconArrowsDiff,
 } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -52,6 +53,7 @@ import { MarkdownOutput } from './components/MarkdownOutput';
 import { NetworkLog } from './components/NetworkLog';
 import { ExperimentDrawer } from './components/ExperimentDrawer';
 import { NetworkVerifyModal } from './components/NetworkVerifyModal';
+import { DiffView } from './components/DiffView';
 import { saveExperiment, type SavedExperiment, type ColumnSnapshot } from './experimentDb';
 import './networkLog'; // [LAW:single-enforcer] activate fetch interceptor once at app root
 import {
@@ -203,6 +205,11 @@ export default function App() {
   const [conversationHistory, setConversationHistory] = useState<Record<string, ChatMessage[]>>({});
   const [turnNumber, setTurnNumber] = useState(1);
   const [evalDone, setEvalDone] = useState(false);
+
+  // Diff view state
+  const [diffOpen, setDiffOpen] = useState(false);
+  const [diffLeftId, setDiffLeftId] = useState<string | null>(null);
+  const [diffRightId, setDiffRightId] = useState<string | null>(null);
 
   const [historyOpen, setHistoryOpen] = useState(false);
   const [experimentDrawerOpen, setExperimentDrawerOpen] = useState(false);
@@ -1287,6 +1294,96 @@ export default function App() {
                   )}
                 </Box>
               </Paper>
+            </Box>
+          );
+        })()}
+
+        {/* ── RESPONSE DIFF VIEW ── */}
+        {hasAnyResponse && !isRunning && (() => {
+          const diffColumns = columns.filter((c) => runStates[c.id]?.response);
+          if (diffColumns.length < 2) return null;
+
+          // [LAW:one-source-of-truth] Derive select options from columns with responses
+          const diffOptions = diffColumns.map((col) => {
+            const idx = columns.indexOf(col);
+            return { value: col.id, label: `${COLUMN_LABELS[idx]} - ${mode === 'models' ? col.model : `Prompt ${COLUMN_LABELS[idx]}`}` };
+          });
+
+          // Default to first two columns with responses when user hasn't chosen
+          const effectiveLeft = diffLeftId && diffColumns.some((c) => c.id === diffLeftId) ? diffLeftId : diffColumns[0].id;
+          const effectiveRight = diffRightId && diffColumns.some((c) => c.id === diffRightId) ? diffRightId : diffColumns[1].id;
+
+          const leftCol = columns.find((c) => c.id === effectiveLeft)!;
+          const rightCol = columns.find((c) => c.id === effectiveRight)!;
+          const leftIdx = columns.indexOf(leftCol);
+          const rightIdx = columns.indexOf(rightCol);
+          const leftLabel = `${COLUMN_LABELS[leftIdx]} - ${mode === 'models' ? leftCol.model : `Prompt ${COLUMN_LABELS[leftIdx]}`}`;
+          const rightLabel = `${COLUMN_LABELS[rightIdx]} - ${mode === 'models' ? rightCol.model : `Prompt ${COLUMN_LABELS[rightIdx]}`}`;
+
+          return (
+            <Box mt={24}>
+              <Divider
+                label={
+                  <Box
+                    style={{ display: 'flex', alignItems: 'center', gap: 7, cursor: 'pointer' }}
+                    onClick={() => setDiffOpen((v) => !v)}
+                  >
+                    <IconArrowsDiff size={13} color="#22b8cf" />
+                    <Text size="xs" fw={600} style={{ letterSpacing: '0.08em', textTransform: 'uppercase', color: '#22b8cf' }}>
+                      Response Diff
+                    </Text>
+                    <IconChevronRight
+                      size={12}
+                      color="#22b8cf"
+                      style={{
+                        transform: diffOpen ? 'rotate(90deg)' : 'rotate(0deg)',
+                        transition: 'transform 0.2s ease',
+                      }}
+                    />
+                  </Box>
+                }
+                labelPosition="center"
+                style={{ borderColor: 'rgba(34,184,207,0.18)' }}
+                mb={14}
+              />
+              <Collapse in={diffOpen}>
+                <Box style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+                  <Select
+                    label="Left"
+                    value={effectiveLeft}
+                    onChange={(v) => setDiffLeftId(v)}
+                    data={diffOptions}
+                    size="xs"
+                    styles={{
+                      input: { background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', color: '#C1C2C5', fontSize: 12 },
+                      dropdown: { background: '#1A1B1E', border: '1px solid rgba(255,255,255,0.1)' },
+                      option: { color: '#C1C2C5', fontSize: 12 },
+                      label: { color: '#909296', fontSize: 11, fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.06em' },
+                    }}
+                    style={{ flex: 1 }}
+                  />
+                  <Select
+                    label="Right"
+                    value={effectiveRight}
+                    onChange={(v) => setDiffRightId(v)}
+                    data={diffOptions}
+                    size="xs"
+                    styles={{
+                      input: { background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', color: '#C1C2C5', fontSize: 12 },
+                      dropdown: { background: '#1A1B1E', border: '1px solid rgba(255,255,255,0.1)' },
+                      option: { color: '#C1C2C5', fontSize: 12 },
+                      label: { color: '#909296', fontSize: 11, fontWeight: 600, textTransform: 'uppercase' as const, letterSpacing: '0.06em' },
+                    }}
+                    style={{ flex: 1 }}
+                  />
+                </Box>
+                <DiffView
+                  leftText={runStates[effectiveLeft]?.response ?? ''}
+                  rightText={runStates[effectiveRight]?.response ?? ''}
+                  leftLabel={leftLabel}
+                  rightLabel={rightLabel}
+                />
+              </Collapse>
             </Box>
           );
         })()}
