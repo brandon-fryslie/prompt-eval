@@ -39,6 +39,8 @@ import {
   IconBrandGithub,
   IconShieldCheck,
   IconHistory,
+  IconX,
+  IconCamera,
 } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -47,7 +49,7 @@ import { PromptPanel } from './components/PromptPanel';
 import { MarkdownOutput } from './components/MarkdownOutput';
 import { NetworkLog } from './components/NetworkLog';
 import { ExperimentDrawer } from './components/ExperimentDrawer';
-import { saveExperiment, type SavedExperiment } from './experimentDb';
+import { saveExperiment, type SavedExperiment, type ColumnSnapshot } from './experimentDb';
 import './networkLog'; // [LAW:single-enforcer] activate fetch interceptor once at app root
 import {
   createClient,
@@ -168,6 +170,8 @@ export default function App() {
 
   const [columns, setColumns] = useState<ColumnConfig[]>(loadColumns);
   const [runStates, setRunStates] = useState<Record<string, ColumnRunState>>({});
+  const runStatesRef = useRef(runStates);
+  runStatesRef.current = runStates;
 
   const [evalResponse, setEvalResponse] = useState('');
   const [streamingEval, setStreamingEval] = useState(false);
@@ -186,6 +190,7 @@ export default function App() {
 
   const [historyOpen, setHistoryOpen] = useState(false);
   const [experimentDrawerOpen, setExperimentDrawerOpen] = useState(false);
+  const [comparisonSnapshot, setComparisonSnapshot] = useState<SavedExperiment['snapshot'] | null>(null);
   const [branches, setBranches] = useState<string[]>([]);
   const activeBranch = currentBranch();
 
@@ -357,7 +362,7 @@ export default function App() {
     }
 
     setError(''); setIsRunning(true); setAutoCollapse(true);
-    setRunStates({});
+    setRunStates({}); setComparisonSnapshot(null);
     setEvalResponse(''); setEvalDone(false);
 
     try {
@@ -372,6 +377,7 @@ export default function App() {
         })
       );
 
+      let evalText = '';
       if (evalEnabled && results.length >= 2) {
         const entries = results
           .map(([effPrompt, result], i) => ({
@@ -384,10 +390,37 @@ export default function App() {
         if (entries.length >= 2) {
           const evalClient = createClient({ apiKey: apiKeys[DEFAULT_PROVIDER]!.trim(), baseUrl: providers[DEFAULT_PROVIDER]?.baseUrl });
           setStreamingEval(true);
-          await evaluateResponses(evalClient, EVAL_MODEL, entries, (d) => setEvalResponse((p) => p + d))
+          const evalResult = await evaluateResponses(evalClient, EVAL_MODEL, entries, (d) => setEvalResponse((p) => p + d))
             .finally(() => { setStreamingEval(false); setEvalDone(true); });
+          evalText = evalResult.text;
         }
       }
+
+      // Build snapshot from current run states // [LAW:one-source-of-truth] snapshot derives from runStates
+      const currentRunStates = runStatesRef.current;
+      const snapshotColumns: ColumnSnapshot[] = active.map((col) => {
+        const rs = currentRunStates[col.id] ?? emptyRunState();
+        const effectiveModel = mode === 'prompts' ? sharedModel : col.model;
+        const cost = rs.inputTokens || rs.outputTokens
+          ? calcCost(effectiveModel, rs.inputTokens, rs.outputTokens, pricingMap)
+          : null;
+        return {
+          id: col.id,
+          response: rs.response,
+          inputTokens: rs.inputTokens,
+          outputTokens: rs.outputTokens,
+          cost,
+          startTime: rs.startTime,
+          firstTokenTime: rs.firstTokenTime,
+          endTime: rs.endTime,
+          preprocessResult: rs.preprocessResult,
+        };
+      });
+
+      const snapshotTotalCost = snapshotColumns.reduce<number | null>((acc, sc) => {
+        return sc.cost != null ? (acc ?? 0) + sc.cost : acc;
+      }, null);
+
       // Auto-save experiment to IndexedDB
       const experiment: SavedExperiment = {
         id: crypto.randomUUID(),
@@ -399,6 +432,11 @@ export default function App() {
         sharedModel,
         sharedProvider,
         evalEnabled,
+        snapshot: {
+          columns: snapshotColumns,
+          evalResponse: evalText,
+          totalCost: snapshotTotalCost,
+        },
       };
       saveExperiment(experiment).catch(() => {});
     } catch (err: unknown) {
@@ -482,7 +520,7 @@ export default function App() {
     setEvalEnabled(exp.evalEnabled);
     save(KEYS.eval, String(exp.evalEnabled));
     // Clear run state
-    setRunStates({});
+    setRunStates({}); setComparisonSnapshot(null);
     setEvalResponse('');
     setEvalDone(false);
     setConversationHistory({});
@@ -490,6 +528,12 @@ export default function App() {
     setError('');
     setExperimentDrawerOpen(false);
   }, [save, saveColumns]);
+
+  const handleCompareExperiment = useCallback((exp: SavedExperiment) => {
+    // Load experiment config and store snapshot for comparison display
+    handleLoadExperiment(exp);
+    setComparisonSnapshot(exp.snapshot ?? null);
+  }, [handleLoadExperiment]);
 
   const hasAnyResponse = columns.some((c) => runStates[c.id]?.response);
 
@@ -1098,6 +1142,173 @@ export default function App() {
           );
         })()}
 
+        {/* ── SNAPSHOT COMPARISON ── */}
+        {comparisonSnapshot && hasAnyResponse && (() => {
+          const snapCols = comparisonSnapshot.columns;
+          const activeColumns = columns.filter((c) => runStates[c.id]?.response);
+          // Build comparison rows: metric | current col values | snapshot col values
+          const metricRows: Array<{
+            label: string;
+            current: Array<{ text: string; raw: number | null }>;
+            snapshot: Array<{ text: string; raw: number | null }>;
+          }> = [];
+
+          // Input Tokens
+          metricRows.push({
+            label: 'Input Tokens',
+            current: activeColumns.map((col) => {
+              const rs = runStates[col.id];
+              return { text: rs?.inputTokens?.toLocaleString() ?? '--', raw: rs?.inputTokens ?? null };
+            }),
+            snapshot: snapCols.map((sc) => ({ text: sc.inputTokens?.toLocaleString() ?? '--', raw: sc.inputTokens ?? null })),
+          });
+
+          // Output Tokens
+          metricRows.push({
+            label: 'Output Tokens',
+            current: activeColumns.map((col) => {
+              const rs = runStates[col.id];
+              return { text: rs?.outputTokens?.toLocaleString() ?? '--', raw: rs?.outputTokens ?? null };
+            }),
+            snapshot: snapCols.map((sc) => ({ text: sc.outputTokens?.toLocaleString() ?? '--', raw: sc.outputTokens ?? null })),
+          });
+
+          // Cost
+          metricRows.push({
+            label: 'Cost',
+            current: activeColumns.map((col) => {
+              const rs = runStates[col.id];
+              const m = mode === 'prompts' ? sharedModel : col.model;
+              const c = rs ? calcCost(m, rs.inputTokens, rs.outputTokens, pricingMap) : null;
+              return { text: c != null ? formatCost(c) : '--', raw: c };
+            }),
+            snapshot: snapCols.map((sc) => ({ text: sc.cost != null ? formatCost(sc.cost) : '--', raw: sc.cost })),
+          });
+
+          // TTFT
+          metricRows.push({
+            label: 'TTFT',
+            current: activeColumns.map((col) => {
+              const rs = runStates[col.id];
+              const ttft = rs?.startTime && rs?.firstTokenTime ? (rs.firstTokenTime - rs.startTime) / 1000 : null;
+              return { text: ttft != null ? `${ttft.toFixed(2)}s` : '--', raw: ttft };
+            }),
+            snapshot: snapCols.map((sc) => {
+              const ttft = sc.startTime && sc.firstTokenTime ? (sc.firstTokenTime - sc.startTime) / 1000 : null;
+              return { text: ttft != null ? `${ttft.toFixed(2)}s` : '--', raw: ttft };
+            }),
+          });
+
+          // Total Time
+          metricRows.push({
+            label: 'Total Time',
+            current: activeColumns.map((col) => {
+              const rs = runStates[col.id];
+              const total = rs?.startTime && rs?.endTime ? (rs.endTime - rs.startTime) / 1000 : null;
+              return { text: total != null ? `${total.toFixed(2)}s` : '--', raw: total };
+            }),
+            snapshot: snapCols.map((sc) => {
+              const total = sc.startTime && sc.endTime ? (sc.endTime - sc.startTime) / 1000 : null;
+              return { text: total != null ? `${total.toFixed(2)}s` : '--', raw: total };
+            }),
+          });
+
+          // Use the shorter array length for paired comparison
+          const pairCount = Math.min(activeColumns.length, snapCols.length);
+
+          return (
+            <Box mt={24}>
+              <Divider
+                label={
+                  <Box style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                    <IconCamera size={13} color="#f59f00" />
+                    <Text size="xs" fw={600} style={{ letterSpacing: '0.08em', textTransform: 'uppercase', color: '#f59f00' }}>
+                      Previous Run Comparison
+                    </Text>
+                  </Box>
+                }
+                labelPosition="center"
+                style={{ borderColor: 'rgba(245,159,0,0.18)' }}
+                mb={14}
+              />
+              <Paper style={{ background: 'rgba(245,159,0,0.025)', border: '1px solid rgba(245,159,0,0.12)', borderRadius: 10, padding: '16px 20px', overflow: 'auto' }}>
+                <Table
+                  horizontalSpacing="md"
+                  verticalSpacing={8}
+                  styles={{
+                    table: { borderCollapse: 'separate', borderSpacing: 0 },
+                    th: { color: '#909296', fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: '1px solid rgba(255,255,255,0.06)', padding: '6px 12px' },
+                    td: { color: '#C1C2C5', fontSize: 13, borderBottom: '1px solid rgba(255,255,255,0.04)', padding: '6px 12px', fontVariantNumeric: 'tabular-nums' },
+                  }}
+                >
+                  <Table.Thead>
+                    <Table.Tr>
+                      <Table.Th style={{ width: 120 }} />
+                      {Array.from({ length: pairCount }, (_, i) => (
+                        <Table.Th key={i} colSpan={2}>
+                          <Box style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <Box style={{ width: 6, height: 6, borderRadius: '50%', background: COLUMN_COLORS[i % COLUMN_COLORS.length] }} />
+                            {COLUMN_LABELS[i]}
+                            <Text size="xs" c="dimmed" fw={400} ml={4}>Current vs Snapshot</Text>
+                          </Box>
+                        </Table.Th>
+                      ))}
+                    </Table.Tr>
+                  </Table.Thead>
+                  <Table.Tbody>
+                    {metricRows.map((row) => (
+                      <Table.Tr key={row.label}>
+                        <Table.Td style={{ color: '#909296', fontSize: 12, fontWeight: 500 }}>{row.label}</Table.Td>
+                        {Array.from({ length: pairCount }, (_, i) => {
+                          const cur = row.current[i];
+                          const snap = row.snapshot[i];
+                          const delta = cur?.raw != null && snap?.raw != null ? cur.raw - snap.raw : null;
+                          const deltaColor = delta == null ? undefined : delta < 0 ? '#20c997' : delta > 0 ? '#fa5252' : '#909296';
+                          const deltaText = delta == null ? '' : delta === 0 ? '(=)' : delta > 0 ? `(+${delta.toFixed(delta < 1 ? 4 : 2)})` : `(${delta.toFixed(delta > -1 ? 4 : 2)})`;
+                          return [
+                            <Table.Td key={`cur-${i}`}>{cur?.text ?? '--'}</Table.Td>,
+                            <Table.Td key={`snap-${i}`}>
+                              <Box style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <Text size="xs" c="dimmed">{snap?.text ?? '--'}</Text>
+                                {deltaText && (
+                                  <Text size="xs" style={{ color: deltaColor, fontSize: 11 }}>{deltaText}</Text>
+                                )}
+                              </Box>
+                            </Table.Td>,
+                          ];
+                        })}
+                      </Table.Tr>
+                    ))}
+                  </Table.Tbody>
+                </Table>
+
+                {comparisonSnapshot.evalResponse && (
+                  <Box mt={12} style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 12 }}>
+                    <Text size="xs" fw={600} c="dimmed" mb={6}>Previous Eval</Text>
+                    <Text size="xs" style={{ color: '#909296', whiteSpace: 'pre-wrap', maxHeight: 120, overflow: 'auto' }}>
+                      {comparisonSnapshot.evalResponse.length > 500
+                        ? comparisonSnapshot.evalResponse.slice(0, 500) + '...'
+                        : comparisonSnapshot.evalResponse}
+                    </Text>
+                  </Box>
+                )}
+
+                <Box style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
+                  <Button
+                    variant="subtle"
+                    color="gray"
+                    size="xs"
+                    leftSection={<IconX size={13} />}
+                    onClick={() => setComparisonSnapshot(null)}
+                  >
+                    Dismiss Comparison
+                  </Button>
+                </Box>
+              </Paper>
+            </Box>
+          );
+        })()}
+
         {/* ── AI EVALUATION ── */}
         <Collapse in={!!evalResponse || streamingEval}>
           <Box mt={24}>
@@ -1198,6 +1409,7 @@ export default function App() {
         opened={experimentDrawerOpen}
         onClose={() => setExperimentDrawerOpen(false)}
         onLoad={handleLoadExperiment}
+        onCompare={handleCompareExperiment}
       />
 
       <style>{`@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }`}</style>

@@ -1,5 +1,17 @@
 // [LAW:one-source-of-truth] Single IndexedDB wrapper for experiment persistence
 
+export interface ColumnSnapshot {
+  id: string;
+  response: string;
+  inputTokens: number;
+  outputTokens: number;
+  cost: number | null;
+  startTime: number | null;
+  firstTokenTime: number | null;
+  endTime: number | null;
+  preprocessResult: string;
+}
+
 export interface SavedExperiment {
   id: string;
   name: string;
@@ -17,6 +29,11 @@ export interface SavedExperiment {
   sharedModel: string;
   sharedProvider: string;
   evalEnabled: boolean;
+  snapshot?: {
+    columns: ColumnSnapshot[];
+    evalResponse: string;
+    totalCost: number | null;
+  };
 }
 
 const DB_NAME = 'prompt-eval-experiments';
