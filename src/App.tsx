@@ -38,6 +38,7 @@ import {
   IconGitBranch,
   IconBrandGithub,
   IconShieldCheck,
+  IconHistory,
 } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -45,6 +46,8 @@ import { GeometricCanvas } from './components/GeometricCanvas';
 import { PromptPanel } from './components/PromptPanel';
 import { MarkdownOutput } from './components/MarkdownOutput';
 import { NetworkLog } from './components/NetworkLog';
+import { ExperimentDrawer } from './components/ExperimentDrawer';
+import { saveExperiment, type SavedExperiment } from './experimentDb';
 import './networkLog'; // [LAW:single-enforcer] activate fetch interceptor once at app root
 import {
   createClient,
@@ -182,6 +185,7 @@ export default function App() {
   const [evalDone, setEvalDone] = useState(false);
 
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [experimentDrawerOpen, setExperimentDrawerOpen] = useState(false);
   const [branches, setBranches] = useState<string[]>([]);
   const activeBranch = currentBranch();
 
@@ -384,6 +388,19 @@ export default function App() {
             .finally(() => { setStreamingEval(false); setEvalDone(true); });
         }
       }
+      // Auto-save experiment to IndexedDB
+      const experiment: SavedExperiment = {
+        id: crypto.randomUUID(),
+        name: `Run ${new Date().toLocaleString()}`,
+        timestamp: Date.now(),
+        mode,
+        columns: columns.map(({ id, model, provider, prompt, preprocessEnabled, preprocessPrompt }) => ({ id, model, provider, prompt, preprocessEnabled, preprocessPrompt })),
+        sharedPrompt,
+        sharedModel,
+        sharedProvider,
+        evalEnabled,
+      };
+      saveExperiment(experiment).catch(() => {});
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
       setError(msg);
@@ -445,6 +462,34 @@ export default function App() {
     setConversationHistory({}); setTurnNumber(1);
     setRunStates({}); setEvalResponse(''); setEvalDone(false); setError('');
   }, []);
+
+  const handleLoadExperiment = useCallback((exp: SavedExperiment) => {
+    setMode(exp.mode);
+    save(KEYS.mode, exp.mode);
+    // Generate new IDs to avoid conflicts
+    const newColumns: ColumnConfig[] = exp.columns.map((c) => ({
+      ...c,
+      id: `col-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    }));
+    setColumns(newColumns);
+    saveColumns(newColumns);
+    setSharedPrompt(exp.sharedPrompt);
+    save(KEYS.sharedPrompt, exp.sharedPrompt);
+    setSharedModel(exp.sharedModel);
+    save(KEYS.sharedModel, exp.sharedModel);
+    setSharedProvider(exp.sharedProvider);
+    save(KEYS.sharedProvider, exp.sharedProvider);
+    setEvalEnabled(exp.evalEnabled);
+    save(KEYS.eval, String(exp.evalEnabled));
+    // Clear run state
+    setRunStates({});
+    setEvalResponse('');
+    setEvalDone(false);
+    setConversationHistory({});
+    setTurnNumber(1);
+    setError('');
+    setExperimentDrawerOpen(false);
+  }, [save, saveColumns]);
 
   const hasAnyResponse = columns.some((c) => runStates[c.id]?.response);
 
@@ -674,6 +719,20 @@ export default function App() {
                   styles={{ track: { background: persist ? undefined : 'rgba(255,255,255,0.1)', border: 'none' } }}
                 />
               </Box>
+            </Tooltip>
+
+            {/* Experiments */}
+            <Tooltip label="Browse saved experiments" position="bottom">
+              <Button
+                variant="subtle"
+                color="gray"
+                size="xs"
+                leftSection={<IconHistory size={13} />}
+                onClick={() => setExperimentDrawerOpen(true)}
+                style={{ border: '1px solid rgba(255,255,255,0.1)', borderRadius: 7 }}
+              >
+                Experiments
+              </Button>
             </Tooltip>
 
             {/* Duplicate model warning */}
@@ -1134,6 +1193,12 @@ export default function App() {
           </a>
         </Box>
       </Box>
+
+      <ExperimentDrawer
+        opened={experimentDrawerOpen}
+        onClose={() => setExperimentDrawerOpen(false)}
+        onLoad={handleLoadExperiment}
+      />
 
       <style>{`@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }`}</style>
     </Box>
