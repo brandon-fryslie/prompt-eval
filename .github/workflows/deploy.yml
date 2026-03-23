@@ -38,6 +38,16 @@ jobs:
             echo "artifact_name=site--preview--${SLUG}" >> "$GITHUB_OUTPUT"
           fi
       - run: npx vite build --base "${{ steps.meta.outputs.base }}"
+      - name: Verify no analytics domains in bundle
+        run: |
+          set -euo pipefail
+          DOMAINS="google-analytics.com googletagmanager.com mixpanel.com segment.com segment.io plausible.io amplitude.com hotjar.com fullstory.com heap.io matomo piwik"
+          PATTERN=$(echo "$DOMAINS" | tr ' ' '|')
+          if grep -r -l -E "$PATTERN" dist/; then
+            echo "::error::Analytics domains found in production bundle! See matched files above."
+            exit 1
+          fi
+          echo "Bundle verified: no analytics domains found."
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.meta.outputs.artifact_name }}

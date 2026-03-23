@@ -31,6 +31,10 @@ This app includes:
 - Zero telemetry
 - Zero third-party scripts
 
+### Automated Verification
+
+This pledge is machine-verified. On every build, the CI pipeline (`"Verify no analytics domains in bundle"` step in `.github/workflows/deploy.yml`) scans the entire production bundle for known analytics domains (Google Analytics, Google Tag Manager, Mixpanel, Segment, Plausible, Amplitude, Hotjar, FullStory, Heap, Matomo, and Piwik). If any are found, the build fails and deployment is blocked.
+
 ## Subresource Integrity (SRI)
 
 All JavaScript and CSS assets in the production build include [Subresource Integrity](https://developer.mozilla.org/en-US/docs/Web/Security/Subresource_Integrity) hashes. This means the browser verifies that every script and stylesheet loaded by the page matches the expected cryptographic hash — if a file is tampered with (e.g., via a compromised CDN or cache), the browser refuses to execute it.

@@ -42,6 +42,7 @@ import {
   IconX,
   IconCamera,
   IconClipboardCheck,
+  IconChartBarOff,
 } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -1660,6 +1661,17 @@ export default function App() {
             <IconEye size={14} />
             Verify Network
           </button>
+          <Tooltip label="No analytics, tracking, or telemetry — verified on every build" withArrow>
+            <Badge
+              variant="outline"
+              size="xs"
+              color="teal"
+              leftSection={<IconChartBarOff size={12} />}
+              style={{ cursor: 'default', textTransform: 'none', fontWeight: 400 }}
+            >
+              No Analytics
+            </Badge>
+          </Tooltip>
         </Box>
       </Box>
 
