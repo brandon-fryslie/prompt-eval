@@ -44,6 +44,7 @@ import {
   IconClipboardCheck,
   IconChartBarOff,
   IconArrowsDiff,
+  IconListCheck,
 } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -54,6 +55,7 @@ import { NetworkLog } from './components/NetworkLog';
 import { ExperimentDrawer } from './components/ExperimentDrawer';
 import { NetworkVerifyModal } from './components/NetworkVerifyModal';
 import { DiffView } from './components/DiffView';
+import { TestSuiteDrawer } from './components/TestSuiteDrawer';
 import { saveExperiment, type SavedExperiment, type ColumnSnapshot } from './experimentDb';
 import './networkLog'; // [LAW:single-enforcer] activate fetch interceptor once at app root
 import {
@@ -213,6 +215,7 @@ export default function App() {
 
   const [historyOpen, setHistoryOpen] = useState(false);
   const [experimentDrawerOpen, setExperimentDrawerOpen] = useState(false);
+  const [testSuiteDrawerOpen, setTestSuiteDrawerOpen] = useState(false);
   const [networkVerifyOpen, setNetworkVerifyOpen] = useState(false);
   const [comparisonSnapshot, setComparisonSnapshot] = useState<SavedExperiment['snapshot'] | null>(null);
   const [branches, setBranches] = useState<string[]>([]);
@@ -839,6 +842,20 @@ export default function App() {
                 style={{ border: '1px solid rgba(255,255,255,0.1)', borderRadius: 7 }}
               >
                 Experiments
+              </Button>
+            </Tooltip>
+
+            {/* Test Suites */}
+            <Tooltip label="Batch-run prompt sets with aggregated results" position="bottom">
+              <Button
+                variant="subtle"
+                color="gray"
+                size="xs"
+                leftSection={<IconListCheck size={13} />}
+                onClick={() => setTestSuiteDrawerOpen(true)}
+                style={{ border: '1px solid rgba(255,255,255,0.1)', borderRadius: 7 }}
+              >
+                Test Suites
               </Button>
             </Tooltip>
 
@@ -1795,6 +1812,20 @@ export default function App() {
         onClose={() => setExperimentDrawerOpen(false)}
         onLoad={handleLoadExperiment}
         onCompare={handleCompareExperiment}
+      />
+
+      <TestSuiteDrawer
+        opened={testSuiteDrawerOpen}
+        onClose={() => setTestSuiteDrawerOpen(false)}
+        apiKeys={apiKeys}
+        columns={columns}
+        mode={mode}
+        sharedModel={sharedModel}
+        sharedProvider={sharedProvider}
+        providers={providers}
+        pricingMap={pricingMap}
+        rubricEnabled={rubricEnabled}
+        rubricDimensions={rubricDimensions}
       />
 
       <NetworkVerifyModal
