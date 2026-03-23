@@ -45,6 +45,7 @@ import {
   IconChartBarOff,
   IconArrowsDiff,
   IconListCheck,
+  IconVariable,
 } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -56,6 +57,7 @@ import { ExperimentDrawer } from './components/ExperimentDrawer';
 import { NetworkVerifyModal } from './components/NetworkVerifyModal';
 import { DiffView } from './components/DiffView';
 import { TestSuiteDrawer } from './components/TestSuiteDrawer';
+import { VariableDrawer, detectVariables } from './components/VariableDrawer';
 import { saveExperiment, type SavedExperiment, type ColumnSnapshot } from './experimentDb';
 import './networkLog'; // [LAW:single-enforcer] activate fetch interceptor once at app root
 import {
@@ -216,6 +218,7 @@ export default function App() {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [experimentDrawerOpen, setExperimentDrawerOpen] = useState(false);
   const [testSuiteDrawerOpen, setTestSuiteDrawerOpen] = useState(false);
+  const [variableDrawerOpen, setVariableDrawerOpen] = useState(false);
   const [networkVerifyOpen, setNetworkVerifyOpen] = useState(false);
   const [comparisonSnapshot, setComparisonSnapshot] = useState<SavedExperiment['snapshot'] | null>(null);
   const [branches, setBranches] = useState<string[]>([]);
@@ -628,6 +631,11 @@ export default function App() {
   // Shared prompt estimated cost (compare-models mode — same for all, just to show in the block)
   const sharedPromptTokens = Math.ceil(sharedPrompt.length / 4);
 
+  // [LAW:one-source-of-truth] Variable count derived from canonical prompt sources
+  const variableCount = detectVariables(
+    mode === 'models' ? sharedPrompt : columns.map((c) => c.prompt).join('\n'),
+  ).length;
+
   return (
     <Box style={{ position: 'relative', minHeight: '100vh' }}>
       <GeometricCanvas />
@@ -856,6 +864,21 @@ export default function App() {
                 style={{ border: '1px solid rgba(255,255,255,0.1)', borderRadius: 7 }}
               >
                 Test Suites
+              </Button>
+            </Tooltip>
+
+            {/* Variables */}
+            <Tooltip label="Run prompts with {{variable}} placeholders across data rows" position="bottom">
+              <Button
+                variant="subtle"
+                color="gray"
+                size="xs"
+                leftSection={<IconVariable size={13} />}
+                rightSection={variableCount > 0 ? <Badge size="xs" variant="filled" color="violet" style={{ minWidth: 16, height: 16, padding: '0 4px' }}>{variableCount}</Badge> : undefined}
+                onClick={() => setVariableDrawerOpen(true)}
+                style={{ border: '1px solid rgba(255,255,255,0.1)', borderRadius: 7 }}
+              >
+                Variables
               </Button>
             </Tooltip>
 
@@ -1826,6 +1849,19 @@ export default function App() {
         pricingMap={pricingMap}
         rubricEnabled={rubricEnabled}
         rubricDimensions={rubricDimensions}
+      />
+
+      <VariableDrawer
+        opened={variableDrawerOpen}
+        onClose={() => setVariableDrawerOpen(false)}
+        apiKeys={apiKeys}
+        columns={columns}
+        mode={mode}
+        sharedPrompt={sharedPrompt}
+        sharedModel={sharedModel}
+        sharedProvider={sharedProvider}
+        providers={providers}
+        pricingMap={pricingMap}
       />
 
       <NetworkVerifyModal
