@@ -50,6 +50,7 @@ import { PromptPanel } from './components/PromptPanel';
 import { MarkdownOutput } from './components/MarkdownOutput';
 import { NetworkLog } from './components/NetworkLog';
 import { ExperimentDrawer } from './components/ExperimentDrawer';
+import { NetworkVerifyModal } from './components/NetworkVerifyModal';
 import { saveExperiment, type SavedExperiment, type ColumnSnapshot } from './experimentDb';
 import './networkLog'; // [LAW:single-enforcer] activate fetch interceptor once at app root
 import {
@@ -204,6 +205,7 @@ export default function App() {
 
   const [historyOpen, setHistoryOpen] = useState(false);
   const [experimentDrawerOpen, setExperimentDrawerOpen] = useState(false);
+  const [networkVerifyOpen, setNetworkVerifyOpen] = useState(false);
   const [comparisonSnapshot, setComparisonSnapshot] = useState<SavedExperiment['snapshot'] | null>(null);
   const [branches, setBranches] = useState<string[]>([]);
   const activeBranch = currentBranch();
@@ -1649,6 +1651,15 @@ export default function App() {
             <IconShieldCheck size={14} />
             Security
           </a>
+          <button
+            onClick={() => setNetworkVerifyOpen(true)}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: '#909296', textDecoration: 'none', fontSize: 12, padding: '4px 10px', borderRadius: 4, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.04)', transition: 'border-color 0.2s, color 0.2s', cursor: 'pointer', fontFamily: 'inherit' }}
+            onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.2)'; e.currentTarget.style.color = '#C1C2C5'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)'; e.currentTarget.style.color = '#909296'; }}
+          >
+            <IconEye size={14} />
+            Verify Network
+          </button>
         </Box>
       </Box>
 
@@ -1657,6 +1668,11 @@ export default function App() {
         onClose={() => setExperimentDrawerOpen(false)}
         onLoad={handleLoadExperiment}
         onCompare={handleCompareExperiment}
+      />
+
+      <NetworkVerifyModal
+        opened={networkVerifyOpen}
+        onClose={() => setNetworkVerifyOpen(false)}
       />
 
       <style>{`@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }`}</style>
