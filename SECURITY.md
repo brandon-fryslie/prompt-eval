@@ -31,6 +31,12 @@ This app includes:
 - Zero telemetry
 - Zero third-party scripts
 
+## Subresource Integrity (SRI)
+
+All JavaScript and CSS assets in the production build include [Subresource Integrity](https://developer.mozilla.org/en-US/docs/Web/Security/Subresource_Integrity) hashes. This means the browser verifies that every script and stylesheet loaded by the page matches the expected cryptographic hash — if a file is tampered with (e.g., via a compromised CDN or cache), the browser refuses to execute it.
+
+SRI is enforced automatically by a custom Vite plugin during the build process. You can verify this by inspecting the `<script>` and `<link>` tags in the built `dist/index.html` — each will have an `integrity` attribute.
+
 ## How to Verify
 
 You don't have to take our word for it. Here's how to confirm these claims yourself:
@@ -40,3 +46,4 @@ You don't have to take our word for it. Here's how to confirm these claims yours
 3. **Storage inspector**: In DevTools, go to Application > Session Storage to see exactly what's stored. Check Local Storage and Cookies to confirm they're empty.
 4. **CSP**: Inspect the page's Content Security Policy headers or meta tags to see the restricted set of allowed domains.
 5. **Build output**: Run `npm run build` and inspect the output in `dist/` -- there are no hidden scripts or third-party includes.
+6. **SRI hashes**: After building, open `dist/index.html` and confirm that every `<script>` and `<link>` tag has an `integrity="sha384-..."` attribute. Your browser will refuse to load any asset whose content doesn't match its hash.
