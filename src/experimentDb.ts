@@ -1,5 +1,7 @@
 // [LAW:one-source-of-truth] Single IndexedDB wrapper for experiment persistence
 
+import type { RubricDimension, RubricScores } from './openai';
+
 export interface ColumnSnapshot {
   id: string;
   response: string;
@@ -29,10 +31,13 @@ export interface SavedExperiment {
   sharedModel: string;
   sharedProvider: string;
   evalEnabled: boolean;
+  rubricEnabled?: boolean;
+  rubricDimensions?: RubricDimension[];
   snapshot?: {
     columns: ColumnSnapshot[];
     evalResponse: string;
     totalCost: number | null;
+    rubricScores?: RubricScores;
   };
 }
 

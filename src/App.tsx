@@ -41,6 +41,7 @@ import {
   IconHistory,
   IconX,
   IconCamera,
+  IconClipboardCheck,
 } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -55,14 +56,18 @@ import {
   createClient,
   runPrompt,
   evaluateResponses,
+  evaluateWithRubric,
   fetchModels,
   calcCost,
   formatCost,
+  RUBRIC_TEMPLATES,
   type ModelGroup,
   type PricingMap,
   type RunResult,
   type ChatMessage,
   type Provider,
+  type RubricDimension,
+  type RubricScores,
 } from './openai';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -124,14 +129,16 @@ function makeColumn(model = DEFAULT_MODEL, provider = DEFAULT_PROVIDER): ColumnC
 // ── Persistence ───────────────────────────────────────────────────────────────
 
 const KEYS = {
-  persist:         'pe-persist',
-  apiKeys:         'pe-api-keys',
-  columns:         'pe-columns-v2',
-  eval:            'pe-eval-enabled',
-  mode:            'pe-mode',
-  sharedPrompt:    'pe-shared-prompt',
-  sharedModel:     'pe-shared-model',
-  sharedProvider:  'pe-shared-provider',
+  persist:            'pe-persist',
+  apiKeys:            'pe-api-keys',
+  columns:            'pe-columns-v2',
+  eval:               'pe-eval-enabled',
+  mode:               'pe-mode',
+  sharedPrompt:       'pe-shared-prompt',
+  sharedModel:        'pe-shared-model',
+  sharedProvider:     'pe-shared-provider',
+  rubricEnabled:      'pe-rubric-enabled',
+  rubricDimensions:   'pe-rubric-dimensions',
 } as const;
 
 const persistedOnLoad = sessionStorage.getItem(KEYS.persist) === 'true';
@@ -161,6 +168,13 @@ export default function App() {
   });
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
   const [evalEnabled, setEvalEnabled] = useState(() => ss(KEYS.eval, 'false') === 'true');
+
+  const [rubricEnabled, setRubricEnabled] = useState(() => ss(KEYS.rubricEnabled, 'false') === 'true');
+  const [rubricDimensions, setRubricDimensions] = useState<RubricDimension[]>(() => {
+    try { const raw = ss(KEYS.rubricDimensions, ''); return raw ? JSON.parse(raw) : RUBRIC_TEMPLATES['General Quality']; } catch { return RUBRIC_TEMPLATES['General Quality']; }
+  });
+  const [rubricScores, setRubricScores] = useState<RubricScores | null>(null);
+  const [rubricTemplate, setRubricTemplate] = useState<string | null>('General Quality');
 
   const [mode, setMode] = useState<Mode>(() => ss(KEYS.mode, 'prompts') as Mode);
   const [sharedPrompt, setSharedPrompt] = useState(() => ss(KEYS.sharedPrompt, ''));
@@ -220,13 +234,15 @@ export default function App() {
     setPersist(on);
     sessionStorage.setItem(KEYS.persist, String(on));
     if (on) {
-      sessionStorage.setItem(KEYS.apiKeys,        JSON.stringify(apiKeys));
-      sessionStorage.setItem(KEYS.columns,        JSON.stringify(columns));
-      sessionStorage.setItem(KEYS.eval,           String(evalEnabled));
-      sessionStorage.setItem(KEYS.mode,           mode);
-      sessionStorage.setItem(KEYS.sharedPrompt,   sharedPrompt);
-      sessionStorage.setItem(KEYS.sharedModel,    sharedModel);
-      sessionStorage.setItem(KEYS.sharedProvider,  sharedProvider);
+      sessionStorage.setItem(KEYS.apiKeys,           JSON.stringify(apiKeys));
+      sessionStorage.setItem(KEYS.columns,           JSON.stringify(columns));
+      sessionStorage.setItem(KEYS.eval,              String(evalEnabled));
+      sessionStorage.setItem(KEYS.mode,              mode);
+      sessionStorage.setItem(KEYS.sharedPrompt,      sharedPrompt);
+      sessionStorage.setItem(KEYS.sharedModel,       sharedModel);
+      sessionStorage.setItem(KEYS.sharedProvider,    sharedProvider);
+      sessionStorage.setItem(KEYS.rubricEnabled,     String(rubricEnabled));
+      sessionStorage.setItem(KEYS.rubricDimensions,  JSON.stringify(rubricDimensions));
     } else {
       Object.values(KEYS).forEach((k) => k !== KEYS.persist && sessionStorage.removeItem(k));
     }
@@ -363,7 +379,7 @@ export default function App() {
 
     setError(''); setIsRunning(true); setAutoCollapse(true);
     setRunStates({}); setComparisonSnapshot(null);
-    setEvalResponse(''); setEvalDone(false);
+    setEvalResponse(''); setEvalDone(false); setRubricScores(null);
 
     try {
       const results = await Promise.all(
@@ -378,6 +394,7 @@ export default function App() {
       );
 
       let evalText = '';
+      let runRubricScores: RubricScores | undefined;
       if (evalEnabled && results.length >= 2) {
         const entries = results
           .map(([effPrompt, result], i) => ({
@@ -390,9 +407,19 @@ export default function App() {
         if (entries.length >= 2) {
           const evalClient = createClient({ apiKey: apiKeys[DEFAULT_PROVIDER]!.trim(), baseUrl: providers[DEFAULT_PROVIDER]?.baseUrl });
           setStreamingEval(true);
-          const evalResult = await evaluateResponses(evalClient, EVAL_MODEL, entries, (d) => setEvalResponse((p) => p + d))
-            .finally(() => { setStreamingEval(false); setEvalDone(true); });
-          evalText = evalResult.text;
+
+          if (rubricEnabled && rubricDimensions.length > 0) {
+            // [LAW:dataflow-not-control-flow] Both paths run eval; variability is in which function and what data flows out
+            const { result: rubricResult, scores } = await evaluateWithRubric(evalClient, EVAL_MODEL, entries, rubricDimensions, (d) => setEvalResponse((p) => p + d))
+              .finally(() => { setStreamingEval(false); setEvalDone(true); });
+            evalText = rubricResult.text;
+            runRubricScores = scores;
+            setRubricScores(scores);
+          } else {
+            const evalResult = await evaluateResponses(evalClient, EVAL_MODEL, entries, (d) => setEvalResponse((p) => p + d))
+              .finally(() => { setStreamingEval(false); setEvalDone(true); });
+            evalText = evalResult.text;
+          }
         }
       }
 
@@ -432,10 +459,13 @@ export default function App() {
         sharedModel,
         sharedProvider,
         evalEnabled,
+        rubricEnabled,
+        rubricDimensions: rubricEnabled ? rubricDimensions : undefined,
         snapshot: {
           columns: snapshotColumns,
           evalResponse: evalText,
           totalCost: snapshotTotalCost,
+          rubricScores: runRubricScores,
         },
       };
       saveExperiment(experiment).catch(() => {});
@@ -446,11 +476,12 @@ export default function App() {
     } finally {
       setIsRunning(false); setAutoCollapse(false);
     }
-  }, [apiKeys, providers, mode, sharedPrompt, sharedModel, sharedProvider, columns, evalEnabled, hasDuplicateModels, runColumn, conversationHistory, getProviderForColumn]);
+  }, [apiKeys, providers, mode, sharedPrompt, sharedModel, sharedProvider, columns, evalEnabled, hasDuplicateModels, runColumn, conversationHistory, getProviderForColumn, rubricEnabled, rubricDimensions]);
 
   const handleClear = () => {
     setRunStates({});
     setEvalResponse(''); setEvalDone(false);
+    setRubricScores(null);
     setError('');
   };
 
@@ -519,10 +550,17 @@ export default function App() {
     save(KEYS.sharedProvider, exp.sharedProvider);
     setEvalEnabled(exp.evalEnabled);
     save(KEYS.eval, String(exp.evalEnabled));
+    setRubricEnabled(exp.rubricEnabled ?? false);
+    save(KEYS.rubricEnabled, String(exp.rubricEnabled ?? false));
+    if (exp.rubricDimensions) {
+      setRubricDimensions(exp.rubricDimensions);
+      save(KEYS.rubricDimensions, JSON.stringify(exp.rubricDimensions));
+    }
     // Clear run state
     setRunStates({}); setComparisonSnapshot(null);
     setEvalResponse('');
     setEvalDone(false);
+    setRubricScores(null);
     setConversationHistory({});
     setTurnNumber(1);
     setError('');
@@ -746,6 +784,21 @@ export default function App() {
               styles={{ track: { background: evalEnabled ? undefined : 'rgba(255,255,255,0.1)', border: 'none' } }}
             />
 
+            {/* Rubric */}
+            <Switch
+              label={
+                <Box style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                  <IconClipboardCheck size={13} color={rubricEnabled ? '#f59f00' : '#5c5f66'} />
+                  <Text size="xs" style={{ color: rubricEnabled ? '#f59f00' : '#5c5f66' }}>Rubric</Text>
+                </Box>
+              }
+              checked={rubricEnabled}
+              onChange={(e) => { setRubricEnabled(e.currentTarget.checked); save(KEYS.rubricEnabled, String(e.currentTarget.checked)); }}
+              color="yellow"
+              size="xs"
+              styles={{ track: { background: rubricEnabled ? undefined : 'rgba(255,255,255,0.1)', border: 'none' } }}
+            />
+
             {/* Save session */}
             <Tooltip label="Saved in session storage — cleared when the tab closes" position="bottom" multiline w={260}>
               <Box>
@@ -786,6 +839,99 @@ export default function App() {
               </Badge>
             )}
           </Box>
+
+          {/* ── Rubric Configuration ── */}
+          <Collapse in={rubricEnabled}>
+            <Divider style={{ borderColor: 'rgba(255,255,255,0.06)', margin: '14px 0' }} />
+            <Box>
+              <Box style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                <IconClipboardCheck size={13} color="#f59f00" />
+                <Text size="xs" fw={600} style={{ letterSpacing: '0.06em', textTransform: 'uppercase', color: '#f59f00' }}>Rubric Dimensions</Text>
+                <Box style={{ flex: 1 }} />
+                <Select
+                  placeholder="Load template..."
+                  value={rubricTemplate}
+                  onChange={(v) => {
+                    setRubricTemplate(v);
+                    if (v && RUBRIC_TEMPLATES[v]) {
+                      const dims = RUBRIC_TEMPLATES[v];
+                      setRubricDimensions(dims);
+                      save(KEYS.rubricDimensions, JSON.stringify(dims));
+                    }
+                  }}
+                  data={Object.keys(RUBRIC_TEMPLATES)}
+                  size="xs"
+                  clearable
+                  styles={{
+                    input: { background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', color: '#C1C2C5', fontSize: 12, width: 180, height: 28, minHeight: 28 },
+                    dropdown: { background: '#1A1B1E', border: '1px solid rgba(255,255,255,0.1)' },
+                    option: { color: '#C1C2C5', fontSize: 12 },
+                  }}
+                />
+              </Box>
+              <Box style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {rubricDimensions.map((dim, idx) => (
+                  <Box key={idx} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <TextInput
+                      value={dim.name}
+                      onChange={(e) => {
+                        const next = rubricDimensions.map((d, j) => j === idx ? { ...d, name: e.currentTarget.value } : d);
+                        setRubricDimensions(next);
+                        save(KEYS.rubricDimensions, JSON.stringify(next));
+                        setRubricTemplate(null);
+                      }}
+                      placeholder="Dimension name"
+                      size="xs"
+                      styles={{ input: { background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', color: '#C1C2C5', fontSize: 12, width: 140 } }}
+                    />
+                    <TextInput
+                      value={dim.description}
+                      onChange={(e) => {
+                        const next = rubricDimensions.map((d, j) => j === idx ? { ...d, description: e.currentTarget.value } : d);
+                        setRubricDimensions(next);
+                        save(KEYS.rubricDimensions, JSON.stringify(next));
+                        setRubricTemplate(null);
+                      }}
+                      placeholder="Description for the LLM"
+                      size="xs"
+                      style={{ flex: 1 }}
+                      styles={{ input: { background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', color: '#C1C2C5', fontSize: 12 } }}
+                    />
+                    <ActionIcon
+                      variant="subtle"
+                      color="gray"
+                      size="sm"
+                      onClick={() => {
+                        const next = rubricDimensions.filter((_, j) => j !== idx);
+                        setRubricDimensions(next);
+                        save(KEYS.rubricDimensions, JSON.stringify(next));
+                        setRubricTemplate(null);
+                      }}
+                      disabled={rubricDimensions.length <= 1}
+                    >
+                      <IconTrash size={12} />
+                    </ActionIcon>
+                  </Box>
+                ))}
+              </Box>
+              <Button
+                variant="subtle"
+                color="yellow"
+                size="xs"
+                leftSection={<IconPlus size={12} />}
+                onClick={() => {
+                  const next = [...rubricDimensions, { name: '', description: '' }];
+                  setRubricDimensions(next);
+                  save(KEYS.rubricDimensions, JSON.stringify(next));
+                  setRubricTemplate(null);
+                }}
+                mt={8}
+                style={{ border: '1px solid rgba(245,159,0,0.2)', borderRadius: 6 }}
+              >
+                Add dimension
+              </Button>
+            </Box>
+          </Collapse>
         </Paper>
 
         {/* Error */}
@@ -1137,6 +1283,107 @@ export default function App() {
                     <Badge size="sm" variant="light" color="teal">Turn {turnNumber}</Badge>
                   )}
                 </Box>
+              </Paper>
+            </Box>
+          );
+        })()}
+
+        {/* ── RUBRIC SCORES TABLE ── */}
+        {rubricScores && Object.keys(rubricScores.columns).length > 0 && (() => {
+          const activeColumns = columns.filter((c) => runStates[c.id]?.response);
+          const colLabels = activeColumns.map((_, i) => `Column ${COLUMN_LABELS[columns.indexOf(activeColumns[i])] ?? i + 1}`);
+          const dimNames = rubricDimensions.map((d) => d.name);
+
+          // [LAW:one-source-of-truth] Score color derived from score value
+          const scoreColor = (score: number): string =>
+            score <= 1 ? '#fa5252' :
+            score <= 2 ? '#fd7e14' :
+            score <= 3 ? '#fab005' :
+            score <= 4 ? '#82c91e' :
+                         '#40c057';
+
+          // Find best score per dimension for highlighting
+          const bestPerDim: Record<string, number> = {};
+          dimNames.forEach((dim) => {
+            const dimKey = dim.toLowerCase();
+            let max = 0;
+            colLabels.forEach((label) => {
+              const score = rubricScores.columns[label]?.[dimKey] ?? 0;
+              if (score > max) max = score;
+            });
+            bestPerDim[dimKey] = max;
+          });
+
+          return (
+            <Box mt={24}>
+              <Divider
+                label={
+                  <Box style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+                    <IconClipboardCheck size={13} color="#f59f00" />
+                    <Text size="xs" fw={600} style={{ letterSpacing: '0.08em', textTransform: 'uppercase', color: '#f59f00' }}>
+                      Rubric Scores
+                    </Text>
+                  </Box>
+                }
+                labelPosition="center"
+                style={{ borderColor: 'rgba(245,159,0,0.18)' }}
+                mb={14}
+              />
+              <Paper style={{ background: 'rgba(245,159,0,0.025)', border: '1px solid rgba(245,159,0,0.12)', borderRadius: 10, padding: '16px 20px', overflow: 'auto' }}>
+                <Table
+                  horizontalSpacing="md"
+                  verticalSpacing={8}
+                  styles={{
+                    table: { borderCollapse: 'separate', borderSpacing: 0 },
+                    th: { color: '#909296', fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: '1px solid rgba(255,255,255,0.06)', padding: '6px 12px' },
+                    td: { color: '#C1C2C5', fontSize: 13, borderBottom: '1px solid rgba(255,255,255,0.04)', padding: '6px 12px' },
+                  }}
+                >
+                  <Table.Thead>
+                    <Table.Tr>
+                      <Table.Th style={{ width: 140 }}>Dimension</Table.Th>
+                      {activeColumns.map((col, i) => (
+                        <Table.Th key={col.id}>
+                          <Box style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                            <Box style={{ width: 6, height: 6, borderRadius: '50%', background: COLUMN_COLORS[columns.indexOf(col) % COLUMN_COLORS.length] }} />
+                            {COLUMN_LABELS[columns.indexOf(col)] ?? i + 1}
+                          </Box>
+                        </Table.Th>
+                      ))}
+                    </Table.Tr>
+                  </Table.Thead>
+                  <Table.Tbody>
+                    {dimNames.map((dim) => {
+                      const dimKey = dim.toLowerCase();
+                      return (
+                        <Table.Tr key={dim}>
+                          <Table.Td style={{ color: '#909296', fontSize: 12, fontWeight: 500 }}>{dim}</Table.Td>
+                          {colLabels.map((label, ci) => {
+                            const score = rubricScores.columns[label]?.[dimKey] ?? 0;
+                            const isBest = score > 0 && score === bestPerDim[dimKey] && colLabels.filter((l) => (rubricScores.columns[l]?.[dimKey] ?? 0) === score).length < colLabels.length;
+                            return (
+                              <Table.Td key={ci} style={{ fontWeight: isBest ? 700 : 400, fontVariantNumeric: 'tabular-nums' }}>
+                                <Box style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                  <Box style={{ width: 8, height: 8, borderRadius: 2, background: score > 0 ? scoreColor(score) : 'rgba(255,255,255,0.1)' }} />
+                                  <Text size="sm" style={{ color: score > 0 ? scoreColor(score) : '#5c5f66', fontWeight: isBest ? 700 : 400 }}>
+                                    {score > 0 ? score : '--'}
+                                  </Text>
+                                </Box>
+                              </Table.Td>
+                            );
+                          })}
+                        </Table.Tr>
+                      );
+                    })}
+                    {/* Summary row */}
+                    <Table.Tr>
+                      <Table.Td style={{ color: '#909296', fontSize: 12, fontWeight: 500, verticalAlign: 'top' }}>Summary</Table.Td>
+                      <Table.Td colSpan={activeColumns.length}>
+                        <Text size="xs" style={{ color: '#C1C2C5', whiteSpace: 'pre-wrap' }}>{rubricScores.summary}</Text>
+                      </Table.Td>
+                    </Table.Tr>
+                  </Table.Tbody>
+                </Table>
               </Paper>
             </Box>
           );

@@ -156,6 +156,124 @@ export async function runPrompt(
   return { text, inputTokens, outputTokens };
 }
 
+// ── Rubric Types & Templates ──────────────────────────────────────────────
+
+export interface RubricDimension {
+  name: string;
+  description: string; // short description for the LLM
+}
+
+export interface RubricScores {
+  columns: Record<string, Record<string, number>>;
+  summary: string;
+}
+
+// [LAW:one-source-of-truth] Predefined rubric templates — single authoritative list
+export const RUBRIC_TEMPLATES: Record<string, RubricDimension[]> = {
+  'General Quality': [
+    { name: 'Accuracy', description: 'Factual correctness of the response' },
+    { name: 'Clarity', description: 'How clear and understandable the response is' },
+    { name: 'Completeness', description: 'Whether the response fully addresses the prompt' },
+    { name: 'Relevance', description: 'How relevant the response is to the prompt' },
+  ],
+  'Creative Writing': [
+    { name: 'Creativity', description: 'Originality and inventiveness of the writing' },
+    { name: 'Coherence', description: 'Logical flow and consistency of the narrative' },
+    { name: 'Style', description: 'Quality of prose, voice, and literary technique' },
+    { name: 'Engagement', description: 'How compelling and interesting the writing is' },
+  ],
+  'Code Generation': [
+    { name: 'Correctness', description: 'Whether the code is functionally correct' },
+    { name: 'Efficiency', description: 'Performance and algorithmic efficiency' },
+    { name: 'Readability', description: 'Code clarity, naming, and documentation' },
+    { name: 'Completeness', description: 'Whether the code fully solves the problem' },
+  ],
+  'Factual Q&A': [
+    { name: 'Accuracy', description: 'Correctness of facts and claims' },
+    { name: 'Thoroughness', description: 'Depth and breadth of the answer' },
+    { name: 'Clarity', description: 'How clearly the answer is communicated' },
+    { name: 'Source Quality', description: 'Quality and reliability of reasoning and references' },
+  ],
+};
+
+export async function evaluateWithRubric(
+  client: OpenAI,
+  model: string,
+  entries: Array<{ label: string; prompt: string; response: string }>,
+  dimensions: RubricDimension[],
+  onChunk: (delta: string) => void,
+): Promise<{ result: RunResult; scores: RubricScores }> {
+  const dimensionList = dimensions.map((d) => `- ${d.name}: ${d.description}`).join('\n');
+  const columnLabels = entries.map((e) => e.label).join(', ');
+
+  const systemPrompt = `You are an expert AI output evaluator using a structured rubric.
+Score each response on each dimension using a 1-5 scale:
+1 = Very Poor, 2 = Poor, 3 = Adequate, 4 = Good, 5 = Excellent
+
+Dimensions:
+${dimensionList}
+
+You MUST respond with ONLY valid JSON (no markdown fences, no extra text) in this exact format:
+{
+  "columns": {
+    "${entries[0]?.label ?? 'A'}": { ${dimensions.map((d) => `"${d.name.toLowerCase()}": <score>`).join(', ')} },
+    ...for each column (${columnLabels})
+  },
+  "summary": "Brief comparative summary (1-3 sentences)"
+}
+
+Use lowercase dimension names as keys. Scores must be integers 1-5.`;
+
+  const sections = entries.map(({ label, prompt, response }) =>
+    `## ${label}\n### Prompt\n\`\`\`\n${prompt}\n\`\`\`\n### Response\n${response}`
+  ).join('\n\n---\n\n');
+
+  const userMessage = `Evaluate these ${entries.length} responses using the rubric:\n\n${sections}`;
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const stream = await (client.chat.completions.create as any)({
+    model,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userMessage },
+    ],
+    stream: true,
+    stream_options: { include_usage: true },
+  });
+
+  let text = '';
+  let inputTokens = 0;
+  let outputTokens = 0;
+
+  for await (const chunk of stream) {
+    const delta = chunk.choices[0]?.delta?.content ?? '';
+    text += delta;
+    if (delta) onChunk(delta);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if ((chunk as any).usage) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      inputTokens = (chunk as any).usage.prompt_tokens ?? 0;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      outputTokens = (chunk as any).usage.completion_tokens ?? 0;
+    }
+  }
+
+  // Parse JSON from response — strip markdown fences if present
+  let jsonText = text.trim();
+  const fenceMatch = jsonText.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fenceMatch) jsonText = fenceMatch[1].trim();
+
+  let scores: RubricScores;
+  try {
+    scores = JSON.parse(jsonText) as RubricScores;
+  } catch {
+    // Fallback: empty scores with the raw text as summary
+    scores = { columns: {}, summary: text };
+  }
+
+  return { result: { text, inputTokens, outputTokens }, scores };
+}
+
 export async function evaluateResponses(
   client: OpenAI,
   model: string,
