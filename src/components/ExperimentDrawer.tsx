@@ -1,7 +1,8 @@
 import { Drawer, TextInput, Text, Box, Badge, ActionIcon, Tooltip, Loader, Button } from '@mantine/core';
-import { IconSearch, IconTrash, IconLayoutColumns, IconEdit, IconCamera, IconArrowsExchange } from '@tabler/icons-react';
-import { useState, useEffect } from 'react';
-import { listExperiments, deleteExperiment, type SavedExperiment } from '../experimentDb';
+import { notifications } from '@mantine/notifications';
+import { IconSearch, IconTrash, IconLayoutColumns, IconEdit, IconCamera, IconArrowsExchange, IconDownload, IconUpload } from '@tabler/icons-react';
+import { useState, useEffect, useRef } from 'react';
+import { listExperiments, deleteExperiment, exportExperiment, exportAllExperiments, importExperiments, type SavedExperiment } from '../experimentDb';
 
 interface ExperimentDrawerProps {
   opened: boolean;
@@ -33,14 +34,47 @@ export function ExperimentDrawer({ opened, onClose, onLoad, onCompare }: Experim
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    if (!opened) return;
+  const refreshExperiments = () => {
     setLoading(true);
     listExperiments()
       .then(setExperiments)
       .catch(() => setExperiments([]))
       .finally(() => setLoading(false));
+  };
+
+  const handleExport = (exp: SavedExperiment, e: React.MouseEvent) => {
+    e.stopPropagation();
+    exportExperiment(exp);
+  };
+
+  const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    importExperiments(file)
+      .then((imported) => {
+        notifications.show({
+          title: 'Import Successful',
+          message: `Imported ${imported.length} experiment${imported.length !== 1 ? 's' : ''}`,
+          color: 'green',
+        });
+        refreshExperiments();
+      })
+      .catch((err) => {
+        notifications.show({
+          title: 'Import Failed',
+          message: err instanceof Error ? err.message : 'Invalid JSON file',
+          color: 'red',
+        });
+      });
+    // Reset so the same file can be re-imported
+    e.target.value = '';
+  };
+
+  useEffect(() => {
+    if (!opened) return;
+    refreshExperiments();
   }, [opened]);
 
   const filtered = experiments.filter((exp) =>
@@ -59,9 +93,31 @@ export function ExperimentDrawer({ opened, onClose, onLoad, onCompare }: Experim
       opened={opened}
       onClose={onClose}
       title={
-        <Box style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <Box style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}>
           <Text fw={700} size="sm" style={{ color: '#C1C2C5' }}>Saved Experiments</Text>
           <Badge size="xs" variant="light" color="violet">{experiments.length}</Badge>
+          <Box style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
+            <Tooltip label="Import experiments" position="bottom">
+              <ActionIcon
+                size="sm"
+                variant="subtle"
+                color="gray"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <IconUpload size={14} />
+              </ActionIcon>
+            </Tooltip>
+            <Tooltip label="Export all" position="bottom">
+              <ActionIcon
+                size="sm"
+                variant="subtle"
+                color="gray"
+                onClick={() => exportAllExperiments()}
+              >
+                <IconDownload size={14} />
+              </ActionIcon>
+            </Tooltip>
+          </Box>
         </Box>
       }
       position="right"
@@ -74,6 +130,13 @@ export function ExperimentDrawer({ opened, onClose, onLoad, onCompare }: Experim
       }}
     >
       <Box style={{ padding: '12px 0' }}>
+        <input
+          type="file"
+          accept=".json"
+          ref={fileInputRef}
+          style={{ display: 'none' }}
+          onChange={handleImport}
+        />
         <TextInput
           placeholder="Search experiments..."
           value={search}
@@ -134,17 +197,28 @@ export function ExperimentDrawer({ opened, onClose, onLoad, onCompare }: Experim
                   <Text size="sm" fw={600} style={{ color: '#C1C2C5', lineHeight: 1.3 }} lineClamp={1}>
                     {exp.name}
                   </Text>
-                  <Tooltip label="Delete experiment" position="left">
-                    <ActionIcon
-                      size="xs"
-                      variant="subtle"
-                      color="gray"
-                      onClick={(e) => handleDelete(exp.id, e)}
-                      style={{ flexShrink: 0 }}
-                    >
-                      <IconTrash size={12} />
-                    </ActionIcon>
-                  </Tooltip>
+                  <Box style={{ display: 'flex', gap: 2, flexShrink: 0 }}>
+                    <Tooltip label="Export experiment" position="left">
+                      <ActionIcon
+                        size="xs"
+                        variant="subtle"
+                        color="gray"
+                        onClick={(e) => handleExport(exp, e)}
+                      >
+                        <IconDownload size={12} />
+                      </ActionIcon>
+                    </Tooltip>
+                    <Tooltip label="Delete experiment" position="left">
+                      <ActionIcon
+                        size="xs"
+                        variant="subtle"
+                        color="gray"
+                        onClick={(e) => handleDelete(exp.id, e)}
+                      >
+                        <IconTrash size={12} />
+                      </ActionIcon>
+                    </Tooltip>
+                  </Box>
                 </Box>
                 <Box style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <Badge

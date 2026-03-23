@@ -103,3 +103,67 @@ export async function getExperiment(id: string): Promise<SavedExperiment | undef
     req.onerror = () => reject(req.error);
   });
 }
+
+// [LAW:single-enforcer] One place for file download mechanics
+function downloadJson(data: unknown, filename: string): void {
+  const json = JSON.stringify(data, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function sanitizeFilename(name: string): string {
+  return name.replace(/[^a-zA-Z0-9_-]/g, '_').replace(/_+/g, '_').slice(0, 100);
+}
+
+export function exportExperiment(exp: SavedExperiment): void {
+  const filename = `experiment_${sanitizeFilename(exp.name)}.json`;
+  downloadJson(exp, filename);
+}
+
+export async function exportAllExperiments(): Promise<void> {
+  const experiments = await listExperiments();
+  const filename = `all_experiments_${new Date().toISOString().slice(0, 10)}.json`;
+  downloadJson(experiments, filename);
+}
+
+// [LAW:single-enforcer] One place for import validation
+const REQUIRED_FIELDS: Array<keyof SavedExperiment> = ['id', 'name', 'timestamp', 'mode', 'columns'];
+
+function isValidExperiment(obj: unknown): obj is SavedExperiment {
+  if (typeof obj !== 'object' || obj === null) return false;
+  const record = obj as Record<string, unknown>;
+  return REQUIRED_FIELDS.every((field) => field in record)
+    && typeof record.name === 'string'
+    && typeof record.timestamp === 'number'
+    && (record.mode === 'models' || record.mode === 'prompts')
+    && Array.isArray(record.columns);
+}
+
+export async function importExperiments(file: File): Promise<SavedExperiment[]> {
+  const text = await file.text();
+  const parsed: unknown = JSON.parse(text);
+  const items = Array.isArray(parsed) ? parsed : [parsed];
+
+  const valid = items.filter(isValidExperiment);
+  if (valid.length === 0) {
+    throw new Error('No valid experiments found in file');
+  }
+
+  // [LAW:one-source-of-truth] Generate new IDs to avoid collisions with existing data
+  const imported: SavedExperiment[] = valid.map((exp) => ({
+    ...exp,
+    id: crypto.randomUUID(),
+  }));
+
+  for (const exp of imported) {
+    await saveExperiment(exp);
+  }
+  return imported;
+}
