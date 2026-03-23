@@ -23,6 +23,7 @@ import {
 } from '@tabler/icons-react';
 import { useState, useEffect, useRef } from 'react';
 import { MarkdownOutput } from './MarkdownOutput';
+import { TokenBreakdown } from './TokenBreakdown';
 import { formatCost, type ModelGroup } from '../openai';
 
 interface Props {
@@ -60,6 +61,12 @@ interface Props {
   estimatedInputCost: number | null;
   disabled: boolean;
   autoCollapse: boolean;
+  // Token breakdown
+  preprocessPromptTokens: number;
+  originalPromptTokens: number;
+  preprocessedResultTokens: number;
+  conversationHistoryTokens: number;
+  userPromptTokens: number;
   // Optional remove
   onRemove?: () => void;
   autoFocusPrompt?: boolean;
@@ -106,7 +113,10 @@ export function PromptPanel({
   preprocessResult, isPreprocessing,
   prompt, onPromptChange, hidePromptSection,
   response, isStreaming, inputTokens, outputTokens, cost, estimatedInputCost,
-  disabled, autoCollapse, onRemove, autoFocusPrompt,
+  disabled, autoCollapse,
+  preprocessPromptTokens, originalPromptTokens, preprocessedResultTokens,
+  conversationHistoryTokens, userPromptTokens,
+  onRemove, autoFocusPrompt,
 }: Props) {
   const [copied, setCopied] = useState(false);
   const [preprocessOpen, setPreprocessOpen] = useState(true);
@@ -409,6 +419,19 @@ export function PromptPanel({
               )}
             </Box>
           </Box>
+
+          {outputTokens > 0 && (
+            <TokenBreakdown
+              preprocessEnabled={preprocessEnabled}
+              preprocessPromptTokens={preprocessPromptTokens}
+              originalPromptTokens={originalPromptTokens}
+              preprocessedResultTokens={preprocessedResultTokens}
+              conversationHistoryTokens={conversationHistoryTokens}
+              userPromptTokens={userPromptTokens}
+              totalInputTokens={inputTokens}
+              color={color}
+            />
+          )}
 
           <Collapse in={outputOpen}>
             <Box

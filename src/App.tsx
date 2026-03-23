@@ -1060,6 +1060,19 @@ export default function App() {
               : null;
             const isDup = mode === 'models' && (modelCounts[`${col.provider}::${col.model}`] ?? 0) > 1;
 
+            // Token breakdown estimates // [LAW:one-source-of-truth] derived from canonical prompt/history data
+            const tokEst = (text: string) => Math.ceil(text.length / 4);
+            const effectivePromptText = mode === 'models' ? sharedPrompt : col.prompt;
+            const history = conversationHistory[col.id] ?? [];
+            const historyTokens = history.reduce((sum, msg) => sum + tokEst(msg.content), 0);
+            const originalPromptTokens = tokEst(effectivePromptText);
+            const preprocessedResultTokens = rs.preprocessResult ? tokEst(rs.preprocessResult) : 0;
+            const preprocessPromptTokens = col.preprocessEnabled ? tokEst(col.preprocessPrompt) : 0;
+            // userPromptTokens = what was actually sent as the prompt (preprocessed result if preprocessing, otherwise original)
+            const userPromptTokens = col.preprocessEnabled && rs.preprocessResult
+              ? preprocessedResultTokens
+              : originalPromptTokens;
+
             return (
               <PromptPanel
                 key={col.id}
@@ -1096,6 +1109,11 @@ export default function App() {
                 estimatedInputCost={estimatedInputCost}
                 disabled={isRunning}
                 autoCollapse={autoCollapse}
+                preprocessPromptTokens={preprocessPromptTokens}
+                originalPromptTokens={originalPromptTokens}
+                preprocessedResultTokens={preprocessedResultTokens}
+                conversationHistoryTokens={historyTokens}
+                userPromptTokens={userPromptTokens}
                 onRemove={columns.length > 1 ? () => removeColumn(col.id) : undefined}
               />
             );
