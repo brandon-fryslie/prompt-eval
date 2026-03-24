@@ -177,6 +177,7 @@ export default function App() {
     try { const raw = ss(KEYS.apiKeys, ''); return raw ? JSON.parse(raw) : {}; } catch { return {}; }
   });
   const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
+  const [securityTipDismissed, setSecurityTipDismissed] = useState(false);
   const [evalEnabled, setEvalEnabled] = useState(() => ss(KEYS.eval, 'false') === 'true');
 
   const [rubricEnabled, setRubricEnabled] = useState(() => ss(KEYS.rubricEnabled, 'false') === 'true');
@@ -785,6 +786,40 @@ export default function App() {
               </Button>
             </Group>
           </Box>
+
+          {/* Security tip: shown when any API key is entered, dismissible */}
+          {!securityTipDismissed && Object.values(apiKeys).some((k) => k.trim()) && (
+            <Alert
+              icon={<IconShieldCheck size={14} />}
+              withCloseButton
+              onClose={() => setSecurityTipDismissed(true)}
+              styles={{
+                root: { background: 'rgba(121,80,242,0.06)', border: '1px solid rgba(121,80,242,0.15)', borderRadius: 8, marginTop: 10, padding: '8px 14px' },
+                icon: { color: '#9775fa', marginRight: 8 },
+                message: { color: '#909296', fontSize: 12, lineHeight: 1.5 },
+                closeButton: { color: '#909296', '&:hover': { background: 'rgba(255,255,255,0.06)' } },
+              }}
+            >
+              <Text size="xs" c="dimmed" style={{ lineHeight: 1.5 }}>
+                For maximum safety, use API keys with <strong style={{ color: '#C1C2C5' }}>limited permissions</strong> and a <strong style={{ color: '#C1C2C5' }}>spending cap</strong>.
+                {' '}Manage your keys:
+                {Object.values(providers).map((prov) => {
+                  const urls: Record<string, string> = {
+                    openai: 'https://platform.openai.com/api-keys',
+                    anthropic: 'https://console.anthropic.com/settings/keys',
+                    google: 'https://aistudio.google.com/apikey',
+                  };
+                  const url = urls[prov.id];
+                  return url ? (
+                    <span key={prov.id}>
+                      {' '}<a href={url} target="_blank" rel="noopener noreferrer" style={{ color: '#9775fa', textDecoration: 'none', borderBottom: '1px solid rgba(151,117,250,0.3)' }}>{prov.name}</a>
+                    </span>
+                  ) : null;
+                })}
+                .{' '}Consider <strong style={{ color: '#C1C2C5' }}>rotating your keys</strong> after use if you have any concerns.
+              </Text>
+            </Alert>
+          )}
 
           <Divider style={{ borderColor: 'rgba(255,255,255,0.06)', margin: '14px 0' }} />
 
