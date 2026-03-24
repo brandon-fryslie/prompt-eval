@@ -17,6 +17,7 @@ import {
   Textarea,
   Table,
   Loader,
+  Menu,
 } from '@mantine/core';
 import {
   IconBolt,
@@ -47,6 +48,7 @@ import {
   IconListCheck,
   IconVariable,
   IconLink,
+  IconFileExport,
 } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -63,6 +65,7 @@ import { ChainEditor } from './components/ChainEditor';
 import type { PromptChain } from './chainTypes';
 import { saveExperiment, type SavedExperiment, type ColumnSnapshot } from './experimentDb';
 import { encodeShareLink, decodeShareLink, type ShareableConfig } from './shareLink';
+import { exportMarkdown, exportHtml, type ExportData } from './exportReport';
 import './networkLog'; // [LAW:single-enforcer] activate fetch interceptor once at app root
 import {
   createClient,
@@ -620,6 +623,46 @@ export default function App() {
     });
   }, [mode, columns, sharedPrompt, sharedModel, sharedProvider, evalEnabled, rubricEnabled, rubricDimensions]);
 
+  // ── Export report ─────────────────────────────────────────────────────────────
+
+  const handleExport = useCallback((format: 'markdown' | 'html') => {
+    const data: ExportData = {
+      mode,
+      columns: columns.map((col, i) => {
+        const rs = runStates[col.id] ?? { response: '', preprocessResult: '', inputTokens: 0, outputTokens: 0, startTime: null, firstTokenTime: null, endTime: null };
+        const effectiveModel = mode === 'prompts' ? sharedModel : col.model;
+        const cost = rs.inputTokens || rs.outputTokens
+          ? calcCost(effectiveModel, rs.inputTokens, rs.outputTokens, pricingMap)
+          : null;
+        return {
+          id: col.id,
+          label: `Column ${COLUMN_LABELS[i] ?? i + 1}`,
+          model: effectiveModel,
+          provider: mode === 'prompts' ? sharedProvider : col.provider,
+          prompt: mode === 'models' ? sharedPrompt : col.prompt,
+          preprocessEnabled: col.preprocessEnabled,
+          preprocessPrompt: col.preprocessPrompt,
+          preprocessResult: rs.preprocessResult,
+          response: rs.response,
+          inputTokens: rs.inputTokens,
+          outputTokens: rs.outputTokens,
+          cost,
+          startTime: rs.startTime,
+          firstTokenTime: rs.firstTokenTime,
+          endTime: rs.endTime,
+        };
+      }),
+      sharedPrompt,
+      sharedModel,
+      sharedProvider,
+      evalResponse,
+      rubricScores,
+      rubricDimensions,
+    };
+    if (format === 'markdown') exportMarkdown(data);
+    else exportHtml(data);
+  }, [mode, columns, runStates, sharedModel, sharedProvider, sharedPrompt, pricingMap, evalResponse, rubricScores, rubricDimensions]);
+
   // Load shared config from URL hash on mount
   useEffect(() => {
     const hash = window.location.hash;
@@ -1011,6 +1054,31 @@ export default function App() {
                 Chains
               </Button>
             </Tooltip>
+
+            {/* Export */}
+            {hasAnyResponse && !isRunning && (
+              <Menu shadow="md" width={180} position="bottom-end">
+                <Menu.Target>
+                  <Button
+                    variant="subtle"
+                    color="gray"
+                    size="xs"
+                    leftSection={<IconFileExport size={13} />}
+                    style={{ border: '1px solid rgba(255,255,255,0.1)', borderRadius: 7 }}
+                  >
+                    Export
+                  </Button>
+                </Menu.Target>
+                <Menu.Dropdown styles={{ dropdown: { background: '#1A1B1E', border: '1px solid rgba(255,255,255,0.1)' } }}>
+                  <Menu.Item onClick={() => handleExport('markdown')} style={{ color: '#C1C2C5', fontSize: 13 }}>
+                    Export as Markdown
+                  </Menu.Item>
+                  <Menu.Item onClick={() => handleExport('html')} style={{ color: '#C1C2C5', fontSize: 13 }}>
+                    Export as HTML
+                  </Menu.Item>
+                </Menu.Dropdown>
+              </Menu>
+            )}
 
             {/* Share */}
             <Tooltip label="Copy shareable link to clipboard" position="bottom">
