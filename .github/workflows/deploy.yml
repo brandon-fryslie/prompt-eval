@@ -48,6 +48,13 @@ jobs:
             exit 1
           fi
           echo "Bundle verified: no analytics domains found."
+      - name: Generate build hashes
+        run: |
+          set -euo pipefail
+          find dist -type f -print0 | sort -z | xargs -0 sha256sum > BUILD_HASHES.sha256
+          echo "Build hashes generated:"
+          cat BUILD_HASHES.sha256
+          cp BUILD_HASHES.sha256 dist/BUILD_HASHES.sha256
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.meta.outputs.artifact_name }}
