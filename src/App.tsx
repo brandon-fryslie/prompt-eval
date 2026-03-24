@@ -59,6 +59,8 @@ import { NetworkVerifyModal } from './components/NetworkVerifyModal';
 import { DiffView } from './components/DiffView';
 import { TestSuiteDrawer } from './components/TestSuiteDrawer';
 import { VariableDrawer, detectVariables } from './components/VariableDrawer';
+import { ChainEditor } from './components/ChainEditor';
+import type { PromptChain } from './chainTypes';
 import { saveExperiment, type SavedExperiment, type ColumnSnapshot } from './experimentDb';
 import { encodeShareLink, decodeShareLink, type ShareableConfig } from './shareLink';
 import './networkLog'; // [LAW:single-enforcer] activate fetch interceptor once at app root
@@ -222,6 +224,8 @@ export default function App() {
   const [experimentDrawerOpen, setExperimentDrawerOpen] = useState(false);
   const [testSuiteDrawerOpen, setTestSuiteDrawerOpen] = useState(false);
   const [variableDrawerOpen, setVariableDrawerOpen] = useState(false);
+  const [chainDrawerOpen, setChainDrawerOpen] = useState(false);
+  const [chains, setChains] = useState<PromptChain[]>([]);
   const [networkVerifyOpen, setNetworkVerifyOpen] = useState(false);
   const [comparisonSnapshot, setComparisonSnapshot] = useState<SavedExperiment['snapshot'] | null>(null);
   const [branches, setBranches] = useState<string[]>([]);
@@ -991,6 +995,20 @@ export default function App() {
                 style={{ border: '1px solid rgba(255,255,255,0.1)', borderRadius: 7 }}
               >
                 Variables
+              </Button>
+            </Tooltip>
+
+            {/* Chains */}
+            <Tooltip label="Define multi-step prompt chains" position="bottom">
+              <Button
+                variant="subtle"
+                color="gray"
+                size="xs"
+                leftSection={<IconLink size={13} />}
+                onClick={() => setChainDrawerOpen(true)}
+                style={{ border: '1px solid rgba(255,255,255,0.1)', borderRadius: 7 }}
+              >
+                Chains
               </Button>
             </Tooltip>
 
@@ -1988,6 +2006,16 @@ export default function App() {
         sharedProvider={sharedProvider}
         providers={providers}
         pricingMap={pricingMap}
+      />
+
+      <ChainEditor
+        opened={chainDrawerOpen}
+        onClose={() => setChainDrawerOpen(false)}
+        chains={chains}
+        setChains={setChains}
+        models={models}
+        modelsLoading={modelsLoading}
+        providers={Object.values(providers).map((p) => ({ value: p.id, label: p.name }))}
       />
 
       <NetworkVerifyModal
