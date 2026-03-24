@@ -46,6 +46,7 @@ import {
   IconArrowsDiff,
   IconListCheck,
   IconVariable,
+  IconLink,
 } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
 import { useState, useCallback, useEffect, useRef } from 'react';
@@ -59,6 +60,7 @@ import { DiffView } from './components/DiffView';
 import { TestSuiteDrawer } from './components/TestSuiteDrawer';
 import { VariableDrawer, detectVariables } from './components/VariableDrawer';
 import { saveExperiment, type SavedExperiment, type ColumnSnapshot } from './experimentDb';
+import { encodeShareLink, decodeShareLink, type ShareableConfig } from './shareLink';
 import './networkLog'; // [LAW:single-enforcer] activate fetch interceptor once at app root
 import {
   createClient,
@@ -589,6 +591,81 @@ export default function App() {
     setComparisonSnapshot(exp.snapshot ?? null);
   }, [handleLoadExperiment]);
 
+  // ── Share link ──────────────────────────────────────────────────────────────
+
+  const handleShareLink = useCallback(() => {
+    const config: ShareableConfig = {
+      v: 1,
+      mode,
+      columns: columns.map(({ model, provider, prompt, preprocessEnabled, preprocessPrompt }) => ({
+        model, provider, prompt, preprocessEnabled, preprocessPrompt,
+      })),
+      sharedPrompt,
+      sharedModel,
+      sharedProvider,
+      evalEnabled,
+      rubricEnabled: rubricEnabled || undefined,
+      rubricDimensions: rubricEnabled ? rubricDimensions : undefined,
+    };
+    const url = encodeShareLink(config);
+    navigator.clipboard.writeText(url).then(() => {
+      notifications.show({ title: 'Share link copied to clipboard!', message: url.length > 200 ? url.slice(0, 200) + '...' : url, color: 'teal' });
+    }, () => {
+      notifications.show({ title: 'Failed to copy', message: 'Could not access clipboard', color: 'red' });
+    });
+  }, [mode, columns, sharedPrompt, sharedModel, sharedProvider, evalEnabled, rubricEnabled, rubricDimensions]);
+
+  // Load shared config from URL hash on mount
+  useEffect(() => {
+    const hash = window.location.hash;
+    if (!hash.includes('#share=')) return;
+
+    const config = decodeShareLink(hash);
+    if (!config) return;
+
+    // Apply config to state
+    setMode(config.mode);
+    save(KEYS.mode, config.mode);
+
+    const newColumns: ColumnConfig[] = config.columns.map((c) => ({
+      ...makeColumn(),
+      ...c,
+    }));
+    setColumns(newColumns);
+    saveColumns(newColumns);
+
+    setSharedPrompt(config.sharedPrompt);
+    save(KEYS.sharedPrompt, config.sharedPrompt);
+    setSharedModel(config.sharedModel);
+    save(KEYS.sharedModel, config.sharedModel);
+    setSharedProvider(config.sharedProvider);
+    save(KEYS.sharedProvider, config.sharedProvider);
+    setEvalEnabled(config.evalEnabled);
+    save(KEYS.eval, String(config.evalEnabled));
+    setRubricEnabled(config.rubricEnabled ?? false);
+    save(KEYS.rubricEnabled, String(config.rubricEnabled ?? false));
+    if (config.rubricDimensions) {
+      setRubricDimensions(config.rubricDimensions);
+      save(KEYS.rubricDimensions, JSON.stringify(config.rubricDimensions));
+    }
+
+    // Clear run states
+    setRunStates({});
+    setComparisonSnapshot(null);
+    setEvalResponse('');
+    setEvalDone(false);
+    setRubricScores(null);
+    setConversationHistory({});
+    setTurnNumber(1);
+    setError('');
+
+    // Clean the URL hash
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+
+    notifications.show({ title: 'Experiment loaded from shared link', message: 'Paste your API keys and run!', color: 'teal' });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // [LAW:single-enforcer] run once on mount only
+
   const hasAnyResponse = columns.some((c) => runStates[c.id]?.response);
 
   const hasRequiredKeys = (() => {
@@ -879,6 +956,20 @@ export default function App() {
                 style={{ border: '1px solid rgba(255,255,255,0.1)', borderRadius: 7 }}
               >
                 Variables
+              </Button>
+            </Tooltip>
+
+            {/* Share */}
+            <Tooltip label="Copy shareable link to clipboard" position="bottom">
+              <Button
+                variant="subtle"
+                color="gray"
+                size="xs"
+                leftSection={<IconLink size={13} />}
+                onClick={handleShareLink}
+                style={{ border: '1px solid rgba(255,255,255,0.1)', borderRadius: 7 }}
+              >
+                Share
               </Button>
             </Tooltip>
 
