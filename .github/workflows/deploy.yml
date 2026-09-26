@@ -21,11 +21,12 @@ jobs:
       artifact_name: ${{ steps.meta.outputs.artifact_name }}
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
-      - run: npm ci
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - name: Build metadata
         id: meta
         run: |
@@ -37,7 +38,7 @@ jobs:
             echo "base=/prompt-eval/preview/${SLUG}/" >> "$GITHUB_OUTPUT"
             echo "artifact_name=site--preview--${SLUG}" >> "$GITHUB_OUTPUT"
           fi
-      - run: npx vite build --base "${{ steps.meta.outputs.base }}"
+      - run: pnpm exec vite build --base "${{ steps.meta.outputs.base }}"
       - name: Verify no analytics domains in bundle
         run: |
           set -euo pipefail
